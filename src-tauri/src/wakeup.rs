@@ -1,7 +1,10 @@
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use crate::{account::AccountManager, models::CodexAuthMode, storage};
 use serde::{Deserialize, Serialize};
-use crate::account::AccountManager;
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,251 +21,260 @@ pub struct WakeupTask {
     pub last_message: Option<String>,
     pub next_run_at: Option<i64>,
 }
-
 pub struct WakeupManager {
     tasks: Mutex<Vec<WakeupTask>>,
+    running: Mutex<HashSet<String>>,
     storage_path: PathBuf,
     account_manager: Arc<AccountManager>,
 }
-
 impl WakeupManager {
-    pub fn new(account_manager: Arc<AccountManager>) -> Self {
-        let base_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".codex-proxy");
-        let _ = std::fs::create_dir_all(&base_dir);
-        let storage_path = base_dir.join("wakeup_tasks.json");
-
-        let initial_tasks = if storage_path.exists() {
-            std::fs::read_to_string(&storage_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<Vec<WakeupTask>>(&s).ok())
-                .unwrap_or_else(Self::default_tasks)
-        } else {
-            let def = Self::default_tasks();
-            let _ = std::fs::write(&storage_path, serde_json::to_string_pretty(&def).unwrap_or_default());
-            def
-        };
-
-        Self {
-            tasks: Mutex::new(initial_tasks),
+    pub fn new(account_manager: Arc<AccountManager>) -> Result<Self, String> {
+        Self::with_storage(
+            account_manager,
+            storage::data_dir()?.join("wakeup_tasks.json"),
+        )
+    }
+    pub fn with_storage(
+        account_manager: Arc<AccountManager>,
+        storage_path: PathBuf,
+    ) -> Result<Self, String> {
+        let mut tasks: Vec<WakeupTask> = storage::read_or_default(&storage_path)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        for task in &mut tasks {
+            if task.enabled {
+                task.next_run_at = Some(if task.run_on_startup {
+                    now
+                } else {
+                    task.next_run_at
+                        .unwrap_or(now + interval_ms(task.interval_hours))
+                });
+            } else {
+                task.next_run_at = None;
+            }
+        }
+        Ok(Self {
+            tasks: Mutex::new(tasks),
+            running: Mutex::new(HashSet::new()),
             storage_path,
             account_manager,
-        }
+        })
     }
-
-    fn default_tasks() -> Vec<WakeupTask> {
-        vec![
-            WakeupTask {
-                id: "wakeup-default-4h".to_string(),
-                name: "Codex Rolling Window Keepalive (4h)".to_string(),
-                enabled: true,
-                account_id: "81289c78-c10d-4dd5-9c51-e2499b7b0c8a".to_string(),
-                interval_hours: 4,
-                run_on_startup: true,
-                last_run_at: Some(chrono::Utc::now().timestamp_millis() - 1000 * 60 * 35),
-                last_status: Some("Success".to_string()),
-                last_duration_ms: Some(342),
-                last_message: Some("Rolling rate-limit window reset timer active".to_string()),
-                next_run_at: Some(chrono::Utc::now().timestamp_millis() + 1000 * 60 * (4 * 60 - 35)),
-            },
-            WakeupTask {
-                id: "wakeup-cedric-6h".to_string(),
-                name: "Standby Profile Quota Warmup (6h)".to_string(),
-                enabled: true,
-                account_id: "6e4540dd-3a10-4cd5-9187-76dcac76940f".to_string(),
-                interval_hours: 6,
-                run_on_startup: false,
-                last_run_at: Some(chrono::Utc::now().timestamp_millis() - 1000 * 60 * 120),
-                last_status: Some("Success".to_string()),
-                last_duration_ms: Some(289),
-                last_message: Some("Token validated, session warmed".to_string()),
-                next_run_at: Some(chrono::Utc::now().timestamp_millis() + 1000 * 60 * (6 * 60 - 120)),
-            },
-        ]
-    }
-
-    fn persist(&self, tasks: &[WakeupTask]) {
-        let _ = std::fs::write(&self.storage_path, serde_json::to_string_pretty(tasks).unwrap_or_default());
-    }
-
     pub fn list(&self) -> Vec<WakeupTask> {
         self.tasks.lock().unwrap().clone()
     }
-
     pub fn save_task(&self, mut task: WakeupTask) -> Result<WakeupTask, String> {
+        if task.name.trim().is_empty() || !(1..=168).contains(&task.interval_hours) {
+            return Err("Name and an interval between 1 and 168 hours are required".into());
+        }
+        if self.account_manager.get(&task.account_id)?.auth_mode != CodexAuthMode::OAuth {
+            return Err("Quota checks require an OAuth account".into());
+        }
         let mut lock = self.tasks.lock().unwrap();
+        let mut next = lock.clone();
         if task.id.is_empty() {
-            task.id = format!("wakeup-{}", uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>());
+            task.id = uuid::Uuid::new_v4().to_string();
         }
-
-        if let Some(existing) = lock.iter_mut().find(|t| t.id == task.id) {
-            *existing = task.clone();
+        let now = chrono::Utc::now().timestamp_millis();
+        let existing = next.iter_mut().find(|t| t.id == task.id);
+        // Execution history is backend-owned; toggling a task cannot fabricate success.
+        if let Some(old) = existing {
+            task.last_run_at = old.last_run_at;
+            task.last_status = old.last_status.clone();
+            task.last_duration_ms = old.last_duration_ms;
+            task.last_message = old.last_message.clone();
+            task.next_run_at = if !task.enabled {
+                None
+            } else if !old.enabled || old.interval_hours != task.interval_hours {
+                Some(now + interval_ms(task.interval_hours))
+            } else {
+                old.next_run_at
+                    .or(Some(now + interval_ms(task.interval_hours)))
+            };
+            *old = task.clone();
         } else {
-            lock.push(task.clone());
+            task.last_run_at = None;
+            task.last_status = None;
+            task.last_duration_ms = None;
+            task.last_message = None;
+            task.next_run_at = task
+                .enabled
+                .then_some(now + interval_ms(task.interval_hours));
+            next.push(task.clone());
         }
-
-        self.persist(&lock);
+        storage::write_json(&self.storage_path, &next)?;
+        *lock = next;
         Ok(task)
     }
-
-    pub fn delete_task(&self, task_id: &str) -> Result<(), String> {
+    pub fn delete_task(&self, id: &str) -> Result<(), String> {
         let mut lock = self.tasks.lock().unwrap();
-        lock.retain(|t| t.id != task_id);
-        self.persist(&lock);
+        let mut next = lock.clone();
+        next.retain(|t| t.id != id);
+        storage::write_json(&self.storage_path, &next)?;
+        *lock = next;
         Ok(())
     }
-
-    pub async fn run_task(&self, task_id: &str) -> Result<WakeupTask, String> {
-        let target_account_id = {
-            let lock = self.tasks.lock().unwrap();
-            let task = lock.iter().find(|t| t.id == task_id)
-                .ok_or_else(|| "Wakeup task not found".to_string())?;
-            task.account_id.clone()
-        };
-
-        let start = std::time::Instant::now();
-        let ping_result = self.account_manager.refresh_quota(&target_account_id).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-        let now = chrono::Utc::now().timestamp_millis();
-
-        let mut lock = self.tasks.lock().unwrap();
-        if let Some(task) = lock.iter_mut().find(|t| t.id == task_id) {
-            task.last_run_at = Some(now);
-            task.last_duration_ms = Some(duration_ms);
-            task.next_run_at = Some(now + (task.interval_hours as i64) * 3600 * 1000);
-
-            match ping_result {
-                Ok(acc) => {
-                    task.last_status = Some("Success".to_string());
-                    task.last_message = Some(format!(
-                        "Pinged {}. Hourly Quota: {}% available.",
-                        acc.email, acc.quota.hourly.remaining_percent
-                    ));
-                }
-                Err(err) => {
-                    task.last_status = Some("Failed".to_string());
-                    task.last_message = Some(format!("Wakeup ping error: {}", err));
-                }
-            }
-
-            let updated = task.clone();
-            self.persist(&lock);
-            Ok(updated)
-        } else {
-            Err("Wakeup task missing".to_string())
+    pub async fn run_task(&self, id: &str) -> Result<WakeupTask, String> {
+        let account_id = self
+            .list()
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or("Task not found")?
+            .account_id
+            .clone();
+        if !self.running.lock().unwrap().insert(id.into()) {
+            return Err("Task is already running".into());
         }
+        let _guard = RunGuard {
+            running: &self.running,
+            id: id.into(),
+        };
+        let start = std::time::Instant::now();
+        let result = self.account_manager.refresh_quota(&account_id).await;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut lock = self.tasks.lock().unwrap();
+        let mut next = lock.clone();
+        let task = next
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or("Task removed during execution")?;
+        task.last_run_at = Some(now);
+        task.last_duration_ms = Some(start.elapsed().as_millis() as u64);
+        task.next_run_at = task
+            .enabled
+            .then_some(now + interval_ms(task.interval_hours));
+        match result {
+            Ok(_) => {
+                task.last_status = Some("Success".into());
+                task.last_message = Some(
+                    "Quota fetched; credentials are valid. No generation request was sent.".into(),
+                );
+            }
+            Err(error) => {
+                task.last_status = Some("Failed".into());
+                task.last_message = Some(error);
+            }
+        }
+        let updated = task.clone();
+        storage::write_json(&self.storage_path, &next)?;
+        *lock = next;
+        Ok(updated)
     }
-
+    fn due(&self, now: i64) -> Vec<String> {
+        self.tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.enabled && t.next_run_at.is_some_and(|at| at <= now))
+            .map(|t| t.id.clone())
+            .collect()
+    }
     pub fn start_background_loop(self: Arc<Self>) {
         tauri::async_runtime::spawn(async move {
-            tracing::info!("Starting background Wakeup Task scheduler loop");
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(30));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                let now = chrono::Utc::now().timestamp_millis();
-
-                let tasks_to_run: Vec<String> = {
-                    let lock = self.tasks.lock().unwrap();
-                    lock.iter()
-                        .filter(|t| {
-                            if !t.enabled {
-                                return false;
-                            }
-                            match t.last_run_at {
-                                None => t.run_on_startup,
-                                Some(last) => now >= last + (t.interval_hours as i64) * 3600 * 1000,
-                            }
-                        })
-                        .map(|t| t.id.clone())
-                        .collect()
-                };
-
-                for task_id in tasks_to_run {
-                    tracing::info!("Executing scheduled Wakeup Task: {}", task_id);
-                    let _ = self.run_task(&task_id).await;
+                timer.tick().await;
+                for id in self.due(chrono::Utc::now().timestamp_millis()) {
+                    if let Err(error) = self.run_task(&id).await {
+                        tracing::warn!("Quota task failed: {error}");
+                    }
                 }
             }
         });
+    }
+}
+fn interval_ms(hours: u32) -> i64 {
+    hours.clamp(1, 168) as i64 * 3_600_000
+}
+struct RunGuard<'a> {
+    running: &'a Mutex<HashSet<String>>,
+    id: String,
+}
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.running.lock().unwrap().remove(&self.id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_wakeup_manager_crud() {
-        let temp_dir = std::env::temp_dir().join(format!("codex-test-{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let storage = temp_dir.join("accounts.json");
-        let account_mgr = Arc::new(AccountManager::with_storage(storage));
-
-        let mgr = WakeupManager {
-            tasks: Mutex::new(Vec::new()),
-            storage_path: temp_dir.join("wakeup.json"),
-            account_manager: account_mgr,
-        };
-
-        let task = WakeupTask {
-            id: "".to_string(),
-            name: "Test 4h Keepalive".to_string(),
+    fn task() -> WakeupTask {
+        WakeupTask {
+            id: String::new(),
+            name: "Quota check".into(),
             enabled: true,
-            account_id: "acc-1".to_string(),
+            account_id: "test".into(),
             interval_hours: 4,
-            run_on_startup: true,
+            run_on_startup: false,
             last_run_at: None,
             last_status: None,
             last_duration_ms: None,
             last_message: None,
             next_run_at: None,
-        };
-        let saved = mgr.save_task(task).expect("save should succeed");
-        assert!(!saved.id.is_empty());
-        assert_eq!(saved.name, "Test 4h Keepalive");
-
-        let list = mgr.list();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, saved.id);
-
-        mgr.delete_task(&saved.id).expect("delete should succeed");
-        assert_eq!(mgr.list().len(), 0);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        }
     }
-
+    fn setup() -> (tempfile::TempDir, WakeupManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = Arc::new(AccountManager::with_storage(
+            dir.path().join("accounts.json"),
+        ));
+        accounts
+            .import_from_json(r#"{"account_id":"test","access_token":"synthetic"}"#)
+            .unwrap();
+        let manager = WakeupManager::with_storage(accounts, dir.path().join("tasks.json")).unwrap();
+        (dir, manager)
+    }
+    #[test]
+    fn fresh_task_without_startup_flag_still_gets_scheduled() {
+        let (_dir, manager) = setup();
+        assert!(manager.list().is_empty());
+        let saved = manager.save_task(task()).unwrap();
+        assert!(saved.next_run_at.is_some());
+        assert!(manager
+            .due(chrono::Utc::now().timestamp_millis())
+            .is_empty());
+        assert_eq!(
+            manager.due(saved.next_run_at.unwrap()),
+            vec![saved.id.clone()]
+        );
+        manager.delete_task(&saved.id).unwrap();
+        assert!(manager.list().is_empty());
+    }
+    #[test]
+    fn invalid_intervals_and_fabricated_history_rejected() {
+        let (_dir, manager) = setup();
+        let mut t = task();
+        t.interval_hours = 0;
+        assert!(manager.save_task(t.clone()).is_err());
+        t.interval_hours = 4;
+        t.last_status = Some("Success".into());
+        let mut saved = manager.save_task(t).unwrap();
+        assert!(saved.last_status.is_none());
+        saved.enabled = false;
+        let saved = manager.save_task(saved).unwrap();
+        assert!(saved.next_run_at.is_none());
+    }
+    #[test]
+    fn startup_schedule_and_disabled_tasks() {
+        let (dir, manager) = setup();
+        let mut t = task();
+        t.run_on_startup = true;
+        manager.save_task(t).unwrap();
+        let reloaded = WakeupManager::with_storage(
+            manager.account_manager.clone(),
+            dir.path().join("tasks.json"),
+        )
+        .unwrap();
+        assert_eq!(reloaded.due(chrono::Utc::now().timestamp_millis()).len(), 1);
+    }
     #[tokio::test]
-    async fn test_run_wakeup_task() {
-        let temp_dir = std::env::temp_dir().join(format!("codex-test-{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let storage = temp_dir.join("accounts.json");
-        let account_mgr = Arc::new(AccountManager::with_storage(storage));
-
-        let mgr = WakeupManager {
-            tasks: Mutex::new(Vec::new()),
-            storage_path: temp_dir.join("wakeup.json"),
-            account_manager: account_mgr,
-        };
-
-        let task = WakeupTask {
-            id: "wakeup-test-1".to_string(),
-            name: "Test Keepalive".to_string(),
-            enabled: true,
-            account_id: "acc-default".to_string(),
-            interval_hours: 4,
-            run_on_startup: true,
-            last_run_at: None,
-            last_status: None,
-            last_duration_ms: None,
-            last_message: None,
-            next_run_at: None,
-        };
-        mgr.save_task(task).unwrap();
-
-        let updated = mgr.run_task("wakeup-test-1").await.unwrap();
-        assert!(updated.last_run_at.is_some());
-        assert!(updated.next_run_at.is_some());
-        assert!(updated.last_duration_ms.is_some());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+    async fn deleted_account_is_recorded_as_failed_without_network() {
+        let (_dir, manager) = setup();
+        let saved = manager.save_task(task()).unwrap();
+        manager.account_manager.delete("test").unwrap();
+        let result = manager.run_task(&saved.id).await.unwrap();
+        assert_eq!(result.last_status.as_deref(), Some("Failed"));
+        assert!(result.next_run_at.is_some());
     }
 }
