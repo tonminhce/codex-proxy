@@ -5,7 +5,6 @@ import {
   Trash2,
   CheckCircle2,
   Shield,
-  Key,
   Globe,
   Sparkles,
   FileCode,
@@ -19,6 +18,7 @@ import { ProgressBar } from '../components/ui/ProgressBar';
 import { Modal } from '../components/ui/Modal';
 import { useAccountStore } from '../stores/useAccountStore';
 import { CodexAuthMode } from '../types/account';
+import { isDesktop } from '../lib/backend';
 
 export const AccountsPage: React.FC = () => {
   const {
@@ -34,7 +34,7 @@ export const AccountsPage: React.FC = () => {
   } = useAccountStore();
 
   useEffect(() => {
-    loadAccounts();
+    if (isDesktop()) void loadAccounts();
   }, [loadAccounts]);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -49,7 +49,7 @@ export const AccountsPage: React.FC = () => {
   const [emailInput, setEmailInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [tokenInput, setTokenInput] = useState('');
-  const [baseUrlInput, setBaseUrlInput] = useState('https://api.deepseek.com/v1');
+  const [baseUrlInput, setBaseUrlInput] = useState('https://api.openai.com/v1');
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -81,14 +81,13 @@ export const AccountsPage: React.FC = () => {
       return;
     }
 
-    await addAccount({
+    if (!await addAccount({
       authMode: addMode,
       email: emailInput || undefined,
       name: nameInput || undefined,
-      accessToken: addMode === 'pat' ? tokenInput : undefined,
       apiKey: addMode === 'apikey' ? tokenInput : undefined,
       apiBaseUrl: addMode === 'apikey' ? baseUrlInput : undefined,
-    });
+    })) return;
     setIsAddModalOpen(false);
     setEmailInput('');
     setNameInput('');
@@ -145,6 +144,7 @@ export const AccountsPage: React.FC = () => {
       </div>
 
       {/* Accounts Grid */}
+      {accounts.length === 0 && <Card><p className="text-sm text-zinc-400">No accounts connected. Sign in or import an auth.json file to begin. Imports do not overwrite your Codex profile.</p></Card>}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {accounts.map((acc) => {
           const isActive = acc.id === activeAccount?.id;
@@ -160,6 +160,7 @@ export const AccountsPage: React.FC = () => {
                   : 'bg-[#0E111A] hover:border-[#2A344A]'
               }`}
             >
+              {acc.quota.updatedAt === 0 && <p className="mb-3 text-xs text-amber-300">Quota unknown — refresh an OAuth account to fetch current limits.</p>}
               {/* Top Row: Avatar, Identity, and Active State */}
               <div>
                 <div className="flex items-start justify-between gap-3">
@@ -251,6 +252,7 @@ export const AccountsPage: React.FC = () => {
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => handleRefresh(acc.id)}
+                    disabled={acc.authMode !== 'oauth' || refreshingId === acc.id}
                     title="Refresh quota from OpenAI"
                     className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition"
                   >
@@ -258,15 +260,13 @@ export const AccountsPage: React.FC = () => {
                       className={`w-3.5 h-3.5 ${refreshingId === acc.id ? 'animate-spin text-indigo-400' : ''}`}
                     />
                   </button>
-                  {!isActive && (
                     <button
-                      onClick={() => deleteAccount(acc.id)}
+                      onClick={() => { if (window.confirm('Remove this account from the local pool? Your existing Codex profile file will be kept.')) void deleteAccount(acc.id); }}
                       title="Remove profile"
                       className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
-                  )}
                 </div>
               </div>
             </Card>
@@ -297,7 +297,7 @@ export const AccountsPage: React.FC = () => {
       >
         <div className="space-y-4">
           {/* Mode Selector Tabs */}
-          <div className="grid grid-cols-3 gap-2 p-1 rounded-xl bg-[#090B11] border border-[#1E2536]">
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-[#090B11] border border-[#1E2536]">
             <button
               type="button"
               onClick={() => setAddMode('oauth')}
@@ -312,18 +312,6 @@ export const AccountsPage: React.FC = () => {
             </button>
             <button
               type="button"
-              onClick={() => setAddMode('pat')}
-              className={`flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-lg transition ${
-                addMode === 'pat'
-                  ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 font-semibold'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Key className="w-3.5 h-3.5" />
-              <span>Token (at-*)</span>
-            </button>
-            <button
-              type="button"
               onClick={() => setAddMode('apikey')}
               className={`flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-lg transition ${
                 addMode === 'apikey'
@@ -332,7 +320,7 @@ export const AccountsPage: React.FC = () => {
               }`}
             >
               <Globe className="w-3.5 h-3.5" />
-              <span>3rd Provider</span>
+              <span>API Key</span>
             </button>
           </div>
 
@@ -367,7 +355,7 @@ export const AccountsPage: React.FC = () => {
                     </div>
                     <p className="text-zinc-400 text-[11px] leading-relaxed">
                       Clicking "Authenticate with OpenAI" will spawn a local loopback callback and open your browser.
-                      Tokens are exchanged securely and written directly to your local Codex profile.
+                      Tokens are saved in the local account pool. Only an explicit account switch updates your Codex profile.
                     </p>
                   </div>
                 )}
@@ -377,20 +365,6 @@ export const AccountsPage: React.FC = () => {
                     {oauthError}
                   </div>
                 )}
-              </div>
-            )}
-
-            {addMode === 'pat' && (
-              <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1">Access Token (at-*)</label>
-                <textarea
-                  required
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  placeholder="Paste Codex access token..."
-                  rows={3}
-                  className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
-                />
               </div>
             )}
 

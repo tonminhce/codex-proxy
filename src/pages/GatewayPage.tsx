@@ -37,11 +37,18 @@ export const GatewayPage: React.FC = () => {
     deleteApiKey,
     toggleApiKey,
     toggleGateway,
+    busy,
+    requestTimeoutSeconds,
+    requestsPerMinute,
+    maxRetries,
+    updateLimits,
   } = useGatewayStore();
 
   const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [portInput, setPortInput] = useState(String(port));
+  React.useEffect(() => { setPortInput(String(port)); }, [port]);
 
   const handleCopyKey = (id: string, key: string) => {
     navigator.clipboard.writeText(key);
@@ -49,9 +56,9 @@ export const GatewayPage: React.FC = () => {
     setTimeout(() => setCopiedKeyId(null), 1500);
   };
 
-  const handleCreateKey = (e: React.FormEvent) => {
+  const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    createApiKey(newKeyName);
+    if (!await createApiKey(newKeyName)) return;
     setIsKeyModalOpen(false);
     setNewKeyName('');
   };
@@ -63,13 +70,14 @@ export const GatewayPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Proxy Gateway Settings</h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Configure the local HTTP/WebSocket proxy gateway, load-balancing strategy, and client API keys.
+            Configure HTTP and SSE forwarding, account routing, and local client API keys.
           </p>
         </div>
         <Button
           variant={running ? 'danger' : 'primary'}
           icon={<Power className="w-4 h-4" />}
           onClick={toggleGateway}
+          disabled={busy}
         >
           {running ? 'Stop Gateway' : 'Start Gateway'}
         </Button>
@@ -90,8 +98,11 @@ export const GatewayPage: React.FC = () => {
               <div className="flex items-center gap-3">
                 <input
                   type="number"
-                  value={port}
-                  onChange={(e) => updatePort(Number(e.target.value))}
+                  min={1}
+                  max={65535}
+                  value={portInput}
+                  onChange={(e) => setPortInput(e.target.value)}
+                  onBlur={() => { if (Number(portInput) !== port) void updatePort(Number(portInput)); }}
                   className="w-32 px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-indigo-500/50 font-mono"
                 />
                 <span className="text-zinc-500 font-sans">Default is 8080</span>
@@ -206,6 +217,13 @@ export const GatewayPage: React.FC = () => {
         </Card>
       </div>
 
+      <Card className="p-6 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        <label>Request timeout (seconds)<input type="number" min={5} max={3600} defaultValue={requestTimeoutSeconds} key={`timeout-${requestTimeoutSeconds}`} onBlur={e => { void updateLimits({ requestTimeoutSeconds: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
+        <label>Additional account attempts<input type="number" min={0} max={5} defaultValue={maxRetries} key={`retries-${maxRetries}`} onBlur={e => { void updateLimits({ maxRetries: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
+        <label>Requests per minute (0 = unlimited)<input type="number" min={0} defaultValue={requestsPerMinute} key={`rate-${requestsPerMinute}`} onBlur={e => { void updateLimits({ requestsPerMinute: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
+        <p className="md:col-span-3 text-zinc-400">Without keys, only native loopback clients are accepted. Once any key exists, a valid enabled bearer key is required. LAN access requires a key and uses plain HTTP—use only on a trusted network. Browser-origin requests are rejected.</p>
+      </Card>
+
       {/* Client API Keys Management Card */}
       <Card className="p-0 overflow-hidden">
         <div className="p-4 px-6 border-b border-[#1E2536] flex items-center justify-between">
@@ -214,7 +232,7 @@ export const GatewayPage: React.FC = () => {
             <div>
               <h2 className="text-sm font-semibold text-zinc-100">Local Client API Keys</h2>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Keys used by external tools (Cursor, Claude Code, custom agents) to authenticate with this gateway.
+                Bearer keys used by Codex clients to authenticate with this gateway. Counters cover this app session.
               </p>
             </div>
           </div>
@@ -299,7 +317,7 @@ export const GatewayPage: React.FC = () => {
               required
               value={newKeyName}
               onChange={(e) => setNewKeyName(e.target.value)}
-              placeholder="e.g. Cursor IDE Agent"
+              placeholder="e.g. Codex CLI"
               className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
             />
           </div>

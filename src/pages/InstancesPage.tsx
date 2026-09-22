@@ -30,32 +30,35 @@ export const InstancesPage: React.FC = () => {
   const [isNewInstModalOpen, setIsNewInstModalOpen] = useState(false);
   const [instName, setInstName] = useState('');
   const [instPath, setInstPath] = useState('');
+  const [boundAccountId, setBoundAccountId] = useState('');
+  const [routeAccountId, setRouteAccountId] = useState('');
 
   const [isRouteModalOpen, setIsRouteModalOpen] = useState(false);
   const [selectedInstId, setSelectedInstId] = useState<string | null>(null);
   const [routeNamespace, setRouteNamespace] = useState('');
   const [routeProviderName, setRouteProviderName] = useState('');
-  const [routeProviderUrl, setRouteProviderUrl] = useState('https://api.deepseek.com/v1');
-  const [routeUpstreamModel, setRouteUpstreamModel] = useState('deepseek-v4-flash');
+  const [routeProviderUrl, setRouteProviderUrl] = useState('https://api.openai.com/v1');
+  const [routeUpstreamModel, setRouteUpstreamModel] = useState('');
 
-  const handleCreateInst = (e: React.FormEvent) => {
+  const handleCreateInst = async (e: React.FormEvent) => {
     e.preventDefault();
-    createInstance(instName, instPath);
+    if (!await createInstance(instName, instPath, boundAccountId || undefined)) return;
     setIsNewInstModalOpen(false);
     setInstName('');
     setInstPath('');
   };
 
-  const handleAddRoute = (e: React.FormEvent) => {
+  const handleAddRoute = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedInstId) return;
-    addRoute(selectedInstId, {
+    if (!await addRoute(selectedInstId, {
       namespace: routeNamespace.toLowerCase().replace(/[^a-z0-9_-]/g, ''),
       providerName: routeProviderName,
       providerBaseUrl: routeProviderUrl,
       upstreamModel: routeUpstreamModel,
       enabled: true,
-    });
+      accountId: routeAccountId,
+    })) return;
     setIsRouteModalOpen(false);
     setRouteNamespace('');
     setRouteProviderName('');
@@ -68,7 +71,7 @@ export const InstancesPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Multi-Instance & Model Routing</h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Run isolated Codex Desktop environments in parallel and route custom model namespaces to 3rd-party APIs.
+            Run isolated Codex CLI app-server processes and route model namespaces using provider-specific API keys.
           </p>
         </div>
         <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={() => setIsNewInstModalOpen(true)}>
@@ -78,6 +81,7 @@ export const InstancesPage: React.FC = () => {
 
       {/* Instances List */}
       <div className="space-y-5">
+        {instances.length === 0 && <Card><p className="text-sm text-zinc-400">No instances yet. Create an isolated profile to launch a Codex app-server. Removing an instance keeps its profile files.</p></Card>}
         {instances.map((inst) => {
           const boundAcc = accounts.find((a) => a.id === inst.boundAccountId);
           return (
@@ -91,6 +95,7 @@ export const InstancesPage: React.FC = () => {
                       {inst.isRunning ? `Running (PID ${inst.pid})` : 'Stopped'}
                     </Badge>
                   </div>
+                  {inst.endpoint && <p className="text-xs text-indigo-300 font-mono select-text">Connect: codex --remote {inst.endpoint}</p>}
                   <div className="flex items-center gap-2 text-xs font-mono text-zinc-400">
                     <Folder className="w-3.5 h-3.5 text-zinc-500" />
                     <span>Profile: {inst.profilePath}</span>
@@ -106,7 +111,7 @@ export const InstancesPage: React.FC = () => {
                     icon={inst.isRunning ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                     onClick={() => toggleInstanceRunning(inst.id)}
                   >
-                    {inst.isRunning ? 'Stop' : 'Launch Codex'}
+                    {inst.isRunning ? 'Stop' : 'Launch App Server'}
                   </Button>
                   {inst.id !== 'inst-default' && (
                     <button
@@ -133,6 +138,7 @@ export const InstancesPage: React.FC = () => {
                   <Button
                     size="sm"
                     variant="ghost"
+                    disabled={inst.isRunning}
                     icon={<Plus className="w-3 h-3" />}
                     onClick={() => {
                       setSelectedInstId(inst.id);
@@ -145,7 +151,7 @@ export const InstancesPage: React.FC = () => {
 
                 {inst.routes.length === 0 ? (
                   <div className="p-4 rounded-xl bg-[#080A10] border border-[#1A2130] text-center text-xs text-zinc-500">
-                    No custom routes configured. All models route directly through the bound ChatGPT account.
+                    No custom routes configured. Requests use the bound account, or the gateway pool if unbound.
                   </div>
                 ) : (
                   <div className="rounded-xl border border-[#1E2536] overflow-hidden bg-[#080A10]">
@@ -231,10 +237,12 @@ export const InstancesPage: React.FC = () => {
               type="text"
               value={instPath}
               onChange={(e) => setInstPath(e.target.value)}
-              placeholder="~/.codex-profiles/work-client-2"
+              placeholder="Auto-generated inside ~/.codex-proxy/profiles/"
               className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
             />
           </div>
+
+          <label className="block text-xs text-zinc-300">Bound account<select className="mt-2 w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" value={boundAccountId} onChange={e => setBoundAccountId(e.target.value)}><option value="">Gateway account pool</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name || a.email}</option>)}</select></label>
 
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#1E2536]">
             <Button type="button" variant="ghost" onClick={() => setIsNewInstModalOpen(false)}>
@@ -255,6 +263,7 @@ export const InstancesPage: React.FC = () => {
         description="Directs a model prefix to a custom API provider without replacing your official login."
       >
         <form onSubmit={handleAddRoute} className="space-y-4">
+          <label className="block text-xs text-zinc-300">Provider API-key account<select required className="mt-2 w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" value={routeAccountId} onChange={e => { setRouteAccountId(e.target.value); const account = accounts.find(a => a.id === e.target.value); if (account) setRouteProviderUrl(account.apiBaseUrl || 'https://api.openai.com/v1'); }}><option value="">Select a configured API-key account</option>{accounts.filter(a => a.authMode === 'apikey').map(a => <option key={a.id} value={a.id}>{a.name || a.email}</option>)}</select></label>
           <div>
             <label className="block text-xs font-medium text-zinc-300 mb-1">Namespace Prefix</label>
             <div className="flex items-center gap-2">

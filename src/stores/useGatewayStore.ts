@@ -1,103 +1,76 @@
 import { create } from 'zustand';
 import { GatewayState, RoutingStrategy, GatewayScope, ClientApiKey } from '../types/gateway';
+import { action, backend } from '../lib/backend';
 
+type Config = Omit<GatewayState, 'stats' | 'activeUpstreamAccountId'>;
 interface GatewayStore extends GatewayState {
-  toggleGateway: () => Promise<void>;
-  updatePort: (port: number) => void;
-  updateScope: (scope: GatewayScope) => void;
-  updateRoutingStrategy: (strategy: RoutingStrategy) => void;
-  updateSessionAffinity: (enabled: boolean, ttlSeconds: number) => void;
-  updateQuotaReserve: (percent: number) => void;
-  createApiKey: (name: string) => void;
-  deleteApiKey: (id: string) => void;
-  toggleApiKey: (id: string) => void;
+  busy: boolean;
+  loadGateway: () => Promise<void>;
+  toggleGateway: () => Promise<boolean>;
+  updatePort: (port: number) => Promise<boolean>;
+  updateScope: (scope: GatewayScope) => Promise<boolean>;
+  updateRoutingStrategy: (strategy: RoutingStrategy) => Promise<boolean>;
+  updateSessionAffinity: (enabled: boolean, ttl: number) => Promise<boolean>;
+  updateQuotaReserve: (percent: number) => Promise<boolean>;
+  updateLimits: (limits: Partial<Pick<Config, 'requestTimeoutSeconds' | 'maxRetries' | 'requestsPerMinute'>>) => Promise<boolean>;
+  createApiKey: (name: string) => Promise<boolean>;
+  deleteApiKey: (id: string) => Promise<boolean>;
+  toggleApiKey: (id: string) => Promise<boolean>;
 }
-
-export const useGatewayStore = create<GatewayStore>((set) => ({
-  running: true,
-  port: 8080,
-  host: '127.0.0.1',
-  scope: 'localhost',
-  routingStrategy: 'auto',
-  sessionAffinity: true,
-  sessionAffinityTtlSeconds: 1800,
-  quotaReservePercent: 15,
-  maxRetries: 3,
-  apiKeys: [
-    {
-      id: 'key-1',
-      name: 'Default Client Key',
-      key: 'sk-codex-local-9a84f18d7bc2014e',
-      enabled: true,
-      totalTokensUsed: 148200,
-      createdAt: Date.now() - 1000 * 60 * 60 * 24 * 10,
-    },
-    {
-      id: 'key-2',
-      name: 'Cursor / Claude Code Agent Key',
-      key: 'sk-codex-agent-4b7189ef01a239cd',
-      enabled: true,
-      totalTokensUsed: 382400,
-      createdAt: Date.now() - 1000 * 60 * 60 * 24 * 3,
-    },
-  ],
-  stats: {
-    totalRequests: 1420,
-    successfulRequests: 1408,
-    failedRequests: 12,
-    totalTokens: 1294800,
-    requestsPerSecond: 2.4,
-  },
-
-  toggleGateway: async () => {
-    set((state) => ({ running: !state.running }));
-  },
-
-  updatePort: (port: number) => {
-    set({ port });
-  },
-
-  updateScope: (scope: GatewayScope) => {
-    set({
-      scope,
-      host: scope === 'lan' ? '0.0.0.0' : '127.0.0.1',
-    });
-  },
-
-  updateRoutingStrategy: (routingStrategy: RoutingStrategy) => {
-    set({ routingStrategy });
-  },
-
-  updateSessionAffinity: (sessionAffinity: boolean, sessionAffinityTtlSeconds: number) => {
-    set({ sessionAffinity, sessionAffinityTtlSeconds });
-  },
-
-  updateQuotaReserve: (quotaReservePercent: number) => {
-    set({ quotaReservePercent });
-  },
-
-  createApiKey: (name: string) => {
-    const randomHex = Array.from(crypto.getRandomValues(new Uint8Array(12)))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    const newKey: ClientApiKey = {
-      id: `key-${Date.now()}`,
-      name: name || 'New Client API Key',
-      key: `sk-codex-local-${randomHex}`,
-      enabled: true,
-      totalTokensUsed: 0,
-      createdAt: Date.now(),
-    };
-    set((state) => ({ apiKeys: [...state.apiKeys, newKey] }));
-  },
-
-  deleteApiKey: (id: string) => {
-    set((state) => ({ apiKeys: state.apiKeys.filter((k) => k.id !== id) }));
-  },
-
-  toggleApiKey: (id: string) => {
-    set((state) => ({
-      apiKeys: state.apiKeys.map((k) => (k.id === id ? { ...k, enabled: !k.enabled } : k)),
+let mutations: Promise<unknown> = Promise.resolve();
+export const useGatewayStore = create<GatewayStore>((set, get) => {
+  const update = (patch: (state: GatewayStore) => Partial<Config>) => {
+    const result = mutations.then(() => action(async () => {
+      set({ busy: true });
+      try {
+        const s = get();
+        const config: Config = {
+          running: s.running, port: s.port, host: s.host, scope: s.scope,
+          routingStrategy: s.routingStrategy, sessionAffinity: s.sessionAffinity,
+          sessionAffinityTtlSeconds: s.sessionAffinityTtlSeconds, quotaReservePercent: s.quotaReservePercent,
+          apiKeys: s.apiKeys, maxRetries: s.maxRetries, requestTimeoutSeconds: s.requestTimeoutSeconds,
+          requestsPerMinute: s.requestsPerMinute, ...patch(s),
+        };
+        set(await backend<Config>('update_gateway_config', { config }));
+      } finally { set({ busy: false }); }
     }));
-  },
-}));
+    mutations = result; return result;
+  };
+  return {
+    busy: false, running: false, port: 8080, host: '127.0.0.1', scope: 'localhost',
+    routingStrategy: 'auto', sessionAffinity: true, sessionAffinityTtlSeconds: 1800,
+    quotaReservePercent: 15, maxRetries: 2, requestTimeoutSeconds: 300, requestsPerMinute: 0, apiKeys: [],
+    stats: { totalRequests: 0, successfulRequests: 0, failedRequests: 0, totalTokens: 0, requestsPerSecond: 0 },
+    loadGateway: async () => {
+      if (get().busy) return;
+      try {
+        const [config, stats] = await Promise.all([backend<Config>('get_gateway_config'), backend<GatewayState['stats']>('get_gateway_stats')]);
+        if (!get().busy) set({ ...config, stats });
+      } catch { /* surfaced by backend */ }
+    },
+    toggleGateway: () => {
+      const result = mutations.then(() => action(async () => {
+        set({ busy: true });
+        try { set(await backend<Config>('toggle_gateway')); }
+        finally { set({ busy: false }); }
+      }));
+      mutations = result; return result;
+    },
+    updatePort: port => update(() => ({ port })),
+    updateScope: scope => update(() => ({ scope, host: scope === 'lan' ? '0.0.0.0' : '127.0.0.1' })),
+    updateRoutingStrategy: routingStrategy => update(() => ({ routingStrategy })),
+    updateSessionAffinity: (sessionAffinity, sessionAffinityTtlSeconds) => update(() => ({ sessionAffinity, sessionAffinityTtlSeconds })),
+    updateQuotaReserve: quotaReservePercent => update(() => ({ quotaReservePercent })),
+    updateLimits: limits => update(() => limits),
+    createApiKey: name => update(state => {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      const key: ClientApiKey = {
+        id: crypto.randomUUID(), name: name.trim(), key: 'sk-codex-local-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''),
+        enabled: true, totalTokensUsed: 0, createdAt: Date.now(),
+      };
+      return { apiKeys: [...state.apiKeys, key] };
+    }),
+    deleteApiKey: id => update(state => ({ apiKeys: state.apiKeys.filter(k => k.id !== id) })),
+    toggleApiKey: id => update(state => ({ apiKeys: state.apiKeys.map(k => k.id === id ? { ...k, enabled: !k.enabled } : k) })),
+  };
+});

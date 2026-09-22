@@ -24,12 +24,12 @@ interface DashboardPageProps {
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
-  const { running, port, host, toggleGateway, stats, routingStrategy } = useGatewayStore();
+  const { running, port, toggleGateway, stats, routingStrategy, sessionAffinity, busy } = useGatewayStore();
   const { activeAccount, accounts, switchActiveAccount } = useAccountStore();
   const { logs } = useLogStore();
   const [copied, setCopied] = React.useState(false);
 
-  const baseUrl = `http://${host}:${port}/v1`;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
 
   const copyBaseUrl = () => {
     navigator.clipboard.writeText(baseUrl);
@@ -52,6 +52,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
             variant={running ? 'danger' : 'primary'}
             icon={running ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
             onClick={toggleGateway}
+            disabled={busy}
           >
             {running ? 'Stop Gateway' : 'Start Gateway'}
           </Button>
@@ -113,7 +114,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           <div className="mt-4 pt-3 border-t border-[#1E2536] flex items-center justify-between text-xs">
             <span className="text-zinc-500">Hourly Quota:</span>
             <span className="font-mono text-emerald-400 font-semibold">
-              {activeAccount ? `${activeAccount.quota.hourly.remainingPercent}% rem.` : '—'}
+              {activeAccount && activeAccount.quota.updatedAt > 0 ? `${activeAccount.quota.hourly.remainingPercent}% rem.` : 'Unknown'}
             </span>
           </div>
         </Card>
@@ -122,13 +123,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         <Card elevated className="relative overflow-hidden">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
-              <span className="text-xs font-medium text-zinc-400">Requests Handled Today</span>
+              <span className="text-xs font-medium text-zinc-400">Requests This Session</span>
               <div className="flex items-center gap-2">
                 <span className="text-lg font-bold font-mono text-zinc-100">
                   {stats.totalRequests.toLocaleString()}
                 </span>
                 <span className="text-xs text-emerald-400 font-mono flex items-center">
-                  <TrendingUp className="w-3 h-3 mr-0.5" /> 99.2%
+                  <TrendingUp className="w-3 h-3 mr-0.5" /> {stats.totalRequests ? `${(100 * stats.successfulRequests / stats.totalRequests).toFixed(1)}%` : '—'}
                 </span>
               </div>
             </div>
@@ -145,14 +146,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       </div>
 
       {/* Active Account Quota & Strategy Detail Grid */}
-      {activeAccount && (
+      {activeAccount && activeAccount.quota.updatedAt > 0 && (
         <Card className="p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-sm font-semibold text-zinc-100">Active Profile Quota Windows</h2>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Target profile: <span className="font-mono text-zinc-300">~/.codex/auth.json</span> • Proactive
-                refresh keeps official tokens authoritative.
+                Last fetched: {new Date(activeAccount.quota.updatedAt).toLocaleString()}. Limits are reported by the upstream account.
               </p>
             </div>
             <Button size="sm" variant="ghost" onClick={() => onNavigate('accounts')}>
@@ -169,7 +169,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 variant="emerald"
               />
               <div className="flex justify-between text-[11px] text-zinc-500 font-mono">
-                <span>Resets in {activeAccount.quota.hourly.resetMinutesRemaining || 45}m</span>
+                <span>Reset: {activeAccount.quota.hourly.resetMinutesRemaining == null ? 'Unknown' : `${activeAccount.quota.hourly.resetMinutesRemaining}m`}</span>
                 <span>Consumed: {activeAccount.quota.hourly.usedPercent}%</span>
               </div>
             </div>
@@ -182,7 +182,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 variant="emerald"
               />
               <div className="flex justify-between text-[11px] text-zinc-500 font-mono">
-                <span>Resets in {Math.round((activeAccount.quota.weekly.resetMinutesRemaining || 2800) / 60)}h</span>
+                <span>Reset: {activeAccount.quota.weekly.resetMinutesRemaining == null ? 'Unknown' : `${Math.round(activeAccount.quota.weekly.resetMinutesRemaining / 60)}h`}</span>
                 <span>Consumed: {activeAccount.quota.weekly.usedPercent}%</span>
               </div>
             </div>
@@ -196,7 +196,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">Account Pool Routing</h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Active Strategy: <span className="font-mono text-indigo-400 font-medium">{routingStrategy}</span> with Session Affinity
+              Active Strategy: <span className="font-mono text-indigo-400 font-medium">{routingStrategy}</span> • Session affinity {sessionAffinity ? 'on' : 'off'}
             </p>
           </div>
           <Button size="sm" variant="secondary" onClick={() => onNavigate('accounts')}>

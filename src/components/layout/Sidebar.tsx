@@ -100,8 +100,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
       <div className="p-4 border-t border-[#1A2130]">
         <div className="p-3 rounded-xl bg-[#0F121A] border border-[#1E2536] space-y-2">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="text-zinc-500">Codex Target</span>
-            <span className="font-mono text-zinc-300">~/.codex</span>
+            <span className="text-zinc-500">Storage</span>
+            <span className="font-mono text-zinc-300">Local only</span>
           </div>
           <div className="flex items-center justify-between text-[11px]">
             <span className="text-zinc-500">Core Engine</span>

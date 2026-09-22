@@ -5,6 +5,7 @@ export interface ModelRoute {
   providerBaseUrl: string;
   upstreamModel: string;
   enabled: boolean;
+  accountId: string;
 }
 
 export interface CodexInstance {
@@ -13,6 +14,7 @@ export interface CodexInstance {
   profilePath: string;
   isRunning: boolean;
   pid?: number;
+  endpoint?: string;
   boundAccountId?: string;
   mixedRoutingEnabled: boolean;
   routes: ModelRoute[];

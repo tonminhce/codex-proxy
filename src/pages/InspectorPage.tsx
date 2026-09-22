@@ -35,7 +35,7 @@ export const InspectorPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Request Inspector & Logs</h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Real-time audit log of local gateway requests, latency, token consumption, and routing telemetry.
+            Up to 500 local, in-memory request summaries. Prompts, responses, headers and credentials are not stored.
           </p>
         </div>
         <Button variant="ghost" icon={<Trash2 className="w-3.5 h-3.5" />} onClick={clearLogs}>
@@ -160,7 +160,7 @@ export const InspectorPage: React.FC = () => {
       <Modal
         isOpen={Boolean(selectedLog)}
         onClose={() => setSelectedLog(null)}
-        title="Request Telemetry Inspection"
+        title="Request Metadata"
         description={`Request ID: ${selectedLog?.id || ''}`}
       >
         {selectedLog && (

@@ -16,6 +16,7 @@ import { Modal } from '../components/ui/Modal';
 import { useWakeupStore } from '../stores/useWakeupStore';
 import { useAccountStore } from '../stores/useAccountStore';
 import { WakeupTask } from '../types/wakeup';
+import { isDesktop } from '../lib/backend';
 
 export const WakeupPage: React.FC = () => {
   const {
@@ -30,7 +31,7 @@ export const WakeupPage: React.FC = () => {
   const { accounts } = useAccountStore();
 
   useEffect(() => {
-    loadTasks();
+    if (isDesktop()) void loadTasks();
   }, [loadTasks]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -45,11 +46,11 @@ export const WakeupPage: React.FC = () => {
       id: '',
       name: taskName,
       enabled: true,
-      accountId: targetAccountId || accounts[0]?.id || 'acc-default',
+      accountId: targetAccountId || accounts.find(a => a.authMode === 'oauth')?.id || '',
       intervalHours: Number(intervalHours),
       runOnStartup,
     };
-    await saveTask(newTask);
+    if (!await saveTask(newTask)) return;
     setIsModalOpen(false);
     setTaskName('');
   };
@@ -87,14 +88,15 @@ export const WakeupPage: React.FC = () => {
             </span>
           </h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Automated background scheduler that pings Codex profiles to start rolling quota reset windows, eliminate cold starts, and keep OAuth sessions warm.
+            Scheduled quota checks with automatic refresh of expired OAuth credentials. No model generation is sent.
           </p>
         </div>
         <Button
           variant="primary"
           icon={<Plus className="w-4 h-4" />}
+          disabled={!accounts.some(a => a.authMode === 'oauth')}
           onClick={() => {
-            setTargetAccountId(accounts[0]?.id || '');
+            setTargetAccountId(accounts.find(a => a.authMode === 'oauth')?.id || '');
             setIsModalOpen(true);
           }}
         >
@@ -110,10 +112,10 @@ export const WakeupPage: React.FC = () => {
           </div>
           <div className="space-y-1">
             <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <span>Rolling Rate-Limit Window Warmup</span>
+              <span>Quota and Credential Checks</span>
             </h3>
             <p className="text-xs text-zinc-400 leading-relaxed max-w-4xl">
-              OpenAI Codex accounts (Plus/Pro) enforce rolling rate-limit quota windows (e.g. 5-hour cycles). By configuring a Wakeup Task, CodexProxy sends scheduled lightweight pings in the background. This <strong>triggers the quota reset timer early</strong> so your account has refreshed and is ready at 100% capacity when you begin coding.
+              Tasks fetch current account usage and refresh expired OAuth credentials when needed. Usage polling does not guarantee that a rolling quota window starts, resets, or returns to full capacity. Tasks run while CodexProxy is open, including when its window is hidden in the tray.
             </p>
           </div>
         </div>
@@ -121,6 +123,7 @@ export const WakeupPage: React.FC = () => {
 
       {/* Tasks List */}
       <div className="space-y-4">
+        {tasks.length === 0 && <Card><p className="text-sm text-zinc-400">No scheduled checks. Add an OAuth account, then create a task.</p></Card>}
         {tasks.map((task) => {
           const targetAccount = accounts.find((a) => a.id === task.accountId);
           const isRunningThis = runningTaskId === task.id;
@@ -168,6 +171,7 @@ export const WakeupPage: React.FC = () => {
                       />
                     }
                     loading={isRunningThis}
+                    disabled={runningTaskId !== null}
                     onClick={() => runTaskNow(task.id)}
                   >
                     {isRunningThis ? 'Pinging Codex...' : 'Run Now'}
@@ -228,7 +232,7 @@ export const WakeupPage: React.FC = () => {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title="Create Codex Wakeup Task"
-        description="Schedule automated keepalive and rate-limit reset triggers."
+        description="Schedule local quota and credential checks."
       >
         <form onSubmit={handleCreateTask} className="space-y-4">
           <div>
@@ -250,7 +254,7 @@ export const WakeupPage: React.FC = () => {
               onChange={(e) => setTargetAccountId(e.target.value)}
               className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
             >
-              {accounts.map((a) => (
+              {accounts.filter(a => a.authMode === 'oauth').map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name || a.email} ({a.email})
                 </option>

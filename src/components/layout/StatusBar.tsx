@@ -4,11 +4,11 @@ import { useGatewayStore } from '../../stores/useGatewayStore';
 import { useAccountStore } from '../../stores/useAccountStore';
 
 export const StatusBar: React.FC = () => {
-  const { running, port, host } = useGatewayStore();
+  const { running, port } = useGatewayStore();
   const { activeAccount } = useAccountStore();
   const [copied, setCopied] = React.useState(false);
 
-  const baseUrl = `http://${host}:${port}/v1`;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
 
   const copyBaseUrl = () => {
     navigator.clipboard.writeText(baseUrl);
@@ -68,7 +68,7 @@ export const StatusBar: React.FC = () => {
       <div className="flex items-center gap-2.5 text-zinc-500 whitespace-nowrap flex-shrink-0 pl-4">
         <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-zinc-900/80 border border-white/[0.05]">
           <Lock className="w-2.5 h-2.5 text-emerald-400" />
-          <span className="text-zinc-400 text-[10px]">Zero-Retention Proxy</span>
+          <span className="text-zinc-400 text-[10px]">No Payload Logging</span>
         </div>
         <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-zinc-900/80 border border-white/[0.05]">
           <Cpu className="w-2.5 h-2.5 text-indigo-400" />

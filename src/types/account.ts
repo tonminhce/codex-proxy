@@ -1,6 +1,6 @@
 export type CodexAuthMode = 'oauth' | 'apikey' | 'pat';
 
-export type CodexPlanType = 'free' | 'basic' | 'plus' | 'team' | 'pro' | 'enterprise';
+export type CodexPlanType = 'free' | 'basic' | 'plus' | 'team' | 'pro' | 'enterprise' | 'unknown' | (string & {});
 
 export interface CodexQuotaWindow {
   usedPercent: number;

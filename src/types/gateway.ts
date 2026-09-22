@@ -32,6 +32,8 @@ export interface GatewayState {
   sessionAffinityTtlSeconds: number;
   quotaReservePercent: number;
   maxRetries: number;
+  requestTimeoutSeconds: number;
+  requestsPerMinute: number;
   apiKeys: ClientApiKey[];
   activeUpstreamAccountId?: string;
   stats: {

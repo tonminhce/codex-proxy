@@ -1,129 +1,45 @@
 import { create } from 'zustand';
 import { CodexInstance, ModelRoute } from '../types/instance';
-
+import { action, backend } from '../lib/backend';
 interface InstanceStore {
   instances: CodexInstance[];
-  createInstance: (name: string, profilePath: string) => void;
-  toggleInstanceRunning: (id: string) => void;
-  deleteInstance: (id: string) => void;
-  addRoute: (instanceId: string, route: Omit<ModelRoute, 'id'>) => void;
-  toggleRoute: (instanceId: string, routeId: string) => void;
-  deleteRoute: (instanceId: string, routeId: string) => void;
+  loadInstances: () => Promise<void>;
+  createInstance: (name: string, path: string, boundAccountId?: string) => Promise<boolean>;
+  toggleInstanceRunning: (id: string) => Promise<boolean>;
+  deleteInstance: (id: string) => Promise<boolean>;
+  addRoute: (id: string, route: Omit<ModelRoute, 'id'>) => Promise<boolean>;
+  toggleRoute: (id: string, route: string) => Promise<boolean>;
+  deleteRoute: (id: string, route: string) => Promise<boolean>;
 }
-
-const MOCK_INSTANCES: CodexInstance[] = [
-  {
-    id: 'inst-default',
-    name: 'Primary Desktop Profile',
-    profilePath: '~/.codex',
-    isRunning: true,
-    pid: 74218,
-    boundAccountId: 'acc-1',
-    mixedRoutingEnabled: true,
-    routes: [
-      {
-        id: 'route-cpa',
-        namespace: 'cpa',
-        providerName: 'Custom CPA Relay',
-        providerBaseUrl: 'https://cpa.example.com/v1',
-        upstreamModel: 'gpt-5.5',
-        enabled: true,
-      },
-      {
-        id: 'route-deepseek',
-        namespace: 'deepseek',
-        providerName: 'DeepSeek Official',
-        providerBaseUrl: 'https://api.deepseek.com/v1',
-        upstreamModel: 'deepseek-v4-flash',
-        enabled: true,
-      },
-    ],
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 30,
-    lastLaunchedAt: Date.now() - 1000 * 60 * 20,
-  },
-  {
-    id: 'inst-2',
-    name: 'Experiment Sandbox (Isolated Profile)',
-    profilePath: '~/.codex-profiles/sandbox',
-    isRunning: false,
-    boundAccountId: 'acc-2',
-    mixedRoutingEnabled: false,
-    routes: [],
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 5,
-  },
-];
-
-export const useInstanceStore = create<InstanceStore>((set) => ({
-  instances: MOCK_INSTANCES,
-
-  createInstance: (name: string, profilePath: string) => {
-    const newInst: CodexInstance = {
-      id: `inst-${Date.now()}`,
-      name,
-      profilePath: profilePath || `~/.codex-profiles/${name.toLowerCase().replace(/\s+/g, '-')}`,
-      isRunning: false,
-      mixedRoutingEnabled: false,
-      routes: [],
-      createdAt: Date.now(),
-    };
-    set((state) => ({ instances: [...state.instances, newInst] }));
-  },
-
-  toggleInstanceRunning: (id: string) => {
-    set((state) => ({
-      instances: state.instances.map((inst) =>
-        inst.id === id
-          ? {
-              ...inst,
-              isRunning: !inst.isRunning,
-              pid: !inst.isRunning ? Math.floor(Math.random() * 50000) + 10000 : undefined,
-              lastLaunchedAt: !inst.isRunning ? Date.now() : inst.lastLaunchedAt,
-            }
-          : inst
-      ),
-    }));
-  },
-
-  deleteInstance: (id: string) => {
-    set((state) => ({ instances: state.instances.filter((inst) => inst.id !== id) }));
-  },
-
-  addRoute: (instanceId: string, route: Omit<ModelRoute, 'id'>) => {
-    set((state) => ({
-      instances: state.instances.map((inst) =>
-        inst.id === instanceId
-          ? {
-              ...inst,
-              routes: [...inst.routes, { ...route, id: `route-${Date.now()}` }],
-            }
-          : inst
-      ),
-    }));
-  },
-
-  toggleRoute: (instanceId: string, routeId: string) => {
-    set((state) => ({
-      instances: state.instances.map((inst) =>
-        inst.id === instanceId
-          ? {
-              ...inst,
-              routes: inst.routes.map((r) => (r.id === routeId ? { ...r, enabled: !r.enabled } : r)),
-            }
-          : inst
-      ),
-    }));
-  },
-
-  deleteRoute: (instanceId: string, routeId: string) => {
-    set((state) => ({
-      instances: state.instances.map((inst) =>
-        inst.id === instanceId
-          ? {
-              ...inst,
-              routes: inst.routes.filter((r) => r.id !== routeId),
-            }
-          : inst
-      ),
-    }));
-  },
-}));
+let pending: Promise<unknown> = Promise.resolve();
+export const useInstanceStore = create<InstanceStore>((set, get) => {
+  const mutate = (work: () => Promise<void>) => {
+    const next = pending.then(() => action(work)); pending = next; return next;
+  };
+  const save = async (instance: CodexInstance) => {
+    const saved = await backend<CodexInstance>('save_codex_instance', { instance });
+    set(s => ({ instances: [...s.instances.filter(i => i.id !== saved.id), saved] }));
+  };
+  const update = (id: string, change: (instance: CodexInstance) => CodexInstance) => mutate(async () => {
+    const instance = get().instances.find(i => i.id === id);
+    if (instance) await save(change(instance));
+  });
+  return {
+    instances: [],
+    loadInstances: async () => { try { set({ instances: await backend<CodexInstance[]>('list_codex_instances') }); } catch { /* visible error */ } },
+    createInstance: (name, profilePath, boundAccountId) => mutate(() => save({
+      id: '', name, profilePath, isRunning: false, boundAccountId, routes: [],
+      mixedRoutingEnabled: false, createdAt: Date.now(),
+    })),
+    toggleInstanceRunning: instanceId => mutate(async () => {
+      set({ instances: await backend<CodexInstance[]>('toggle_codex_instance', { instanceId }) });
+    }),
+    deleteInstance: instanceId => mutate(async () => {
+      await backend('delete_codex_instance', { instanceId });
+      set(s => ({ instances: s.instances.filter(i => i.id !== instanceId) }));
+    }),
+    addRoute: (id, route) => update(id, i => ({ ...i, routes: [...i.routes, { ...route, id: '' }] })),
+    toggleRoute: (id, routeId) => update(id, i => ({ ...i, routes: i.routes.map(r => r.id === routeId ? { ...r, enabled: !r.enabled } : r) })),
+    deleteRoute: (id, routeId) => update(id, i => ({ ...i, routes: i.routes.filter(r => r.id !== routeId) })),
+  };
+});
