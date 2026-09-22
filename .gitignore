@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Production builds
+dist/
+dist-ssr/
+*.local
+
+# Tauri / Rust build artifacts
+target/
+src-tauri/target/
+
+# Reference cloned repository
+.reference/
+
+# Environment & credentials
+.env
+.env.*
+*.pem
+accounts.json
+auth.json
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

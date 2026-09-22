@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: #1E2536;
+  }
+}
+
+/* Custom Inky Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #232B3E;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333E59;
+}
+
+/* Custom Range Slider for WebKit (macOS / Safari / Tauri) and Firefox */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #6366f1;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 10px rgba(99, 102, 241, 0.4);
+  cursor: pointer;
+  margin-top: -5px;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(99, 102, 241, 0.6);
+}
+
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.22);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.7), 0 0 18px rgba(99, 102, 241, 0.85);
+  border-color: #818cf8;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: transparent;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #6366f1;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 10px rgba(99, 102, 241, 0.4);
+  cursor: pointer;
+}
