@@ -1,179 +1,96 @@
-# Agent Handover & Architecture Guide: CodexProxy
+# Agent handover: CodexProxy
 
-> **Purpose**: This document serves as the authoritative operational and architectural handover for any incoming AI agent or engineer working on `codex-proxy`. Read this document carefully before making changes.
+Updated 2026-09-22. This document replaces the earlier handover's demonstration-state claims.
 
----
+## Non-negotiable constraints
 
-## 1. Project Background & Core Philosophy
+- Tauri v2 + React 19; gateway, OAuth, scheduler, and account management run in Rust.
+- No external proxy binaries or Go sidecars. Optional managed processes are the official Codex CLI app-server itself.
+- Local credentials, no analytics, no prompt/response logging.
+- Preserve user changes. Never run tests against the real home directory or saved tokens.
+- Use CodeGraph first only if the user has created a root .codegraph directory.
+- Keep StatusBar/Badge single-line layout protections.
 
-- **Goal**: `codex-proxy` is a specialized desktop gateway and account manager built **specifically and solely for OpenAI Codex**.
-- **The Problem It Solves**: The original "Cockpit Tools" project was overloaded with bloat: 15+ irrelevant IDE configurations, commercial advertisements, telemetry trackers, and a separate Go sidecar (`cockpit-cliproxy`) requiring external process management.
-- **The Constraints (Strict)**:
-  1. **Pure Rust Host**: All backend gateway logic, OAuth handling, schedulers, and account management must run in-process inside Tauri v2 Rust. **No Go sidecars, no external proxy binaries**.
-  2. **Tauri v2 + React 19**: Modern desktop stack with Vite and Tailwind CSS. **No Electron**.
-  3. **Zero Retention / Local Only**: No external analytics, no telemetry. All credentials stay local in `~/.codex-proxy/` and `~/.codex/`.
-  4. **Strict Quality Bar**: Must always pass `cargo test`, `npm run typecheck`, and `npm run build` with 0 errors.
+## Implemented architecture
 
----
+**Rust**
 
-## 2. System Architecture & Component Map
+- models.rs: account/quota, validated gateway configuration, session statistics, metadata-only request records.
+- storage.rs: atomic JSON/private-file writes, 0600 Unix files, strict corruption handling. Invalid data fails visibly rather than being silently overwritten.
+- account.rs: nested auth.json and flat/API-key imports; atomic batch merge by account ID; secret-redacted IPC; explicit auth takeover with backup/rollback; live quota parsing; serialized refresh-token rotation. Imports never perform takeover.
+- oauth.rs: PKCE S256 browser authorization, localhost:1455 callback, bounded fragmented-request parsing, state/path/duplicate-parameter validation, cancellation/error response handling, bounded token exchange. Browser confirmation says authorization was received, not that token exchange has already succeeded.
+- proxy.rs: Axum in-process HTTP server, acknowledged start/stop/rebind, upstream request forwarding with Reqwest, bounded bodies and incremental SSE forwarding, session affinity, quota-aware routing, failover before streaming begins, rate limits, key validation, browser/DNS-rebinding protections, active-request shutdown, bounded in-memory logs/stats.
+- protocol.rs: fragmented UTF-8 SSE decoder, usage extraction support, OAuth Chat Completions compatibility adapter for messages/images/function calls and tool results.
+- wakeup.rs: persisted quota-check schedules; disabled/new/startup task behavior; execution-history ownership; overlap protection; error reporting. A usage check is not a model-generation warmup or quota reset.
+- settings.rs: local application preferences and explicit, preserving TOML overrides. Saving settings alone never edits Codex config. Blank overrides leave existing config keys unchanged.
+- instances.rs: saved isolated profile definitions, validated provider routes, real managed CLI app-server processes, exit polling, stop/reap on exit. Custom routes can only use API-key credentials registered for the exact upstream URL.
+- lib.rs: Tauri IPC and tray lifecycle. Start background work with tauri::async_runtime::spawn in setup, not bare tokio::spawn.
+- tests/cli_smoke.rs: opt-in installed-CLI protocol and managed-instance integration check, all with synthetic local endpoints and temporary profile directories.
 
-```mermaid
-flowchart TD
-    subgraph Frontend ["React 19 Frontend (src/)"]
-        DASH["DashboardPage.tsx"]
-        ACC["AccountsPage.tsx"]
-        WAKE_UI["WakeupPage.tsx"]
-        GW_UI["GatewayPage.tsx"]
-        INST_UI["InstancesPage.tsx"]
-        LOG_UI["InspectorPage.tsx"]
-        SET_UI["SettingsPage.tsx"]
-        STORES["Zustand Stores (src/stores/)"]
-    end
+**React**
 
-    subgraph RustHost ["Tauri v2 Host (src-tauri/)"]
-        LIB["lib.rs (AppState & IPC Handler)"]
-        PROXY["proxy.rs (In-Process HTTP & SSE :8080)"]
-        OAUTH["oauth.rs (PKCE Loopback & Token Exchange)"]
-        WAKE["wakeup.rs (Tokio Scheduler Loop)"]
-        ACCT["account.rs (Account Pool & ~/.codex Takeover)"]
-        MODELS["models.rs (Core Structs)"]
-    end
+Every store is backed by IPC. There are no seeded accounts, tokens, request logs, schedules, fake PIDs, or optimistic success fallbacks. Empty backend lists replace existing UI lists. Mutating operations update UI only after success; failures appear in an app-level banner and open modals. App.tsx polls backend state without overlapping polling batches. Browser preview clearly says the backend is unavailable.
 
-    subgraph External ["External Services & Clients"]
-        CLI["OpenAI Codex CLI (/opt/homebrew/bin/codex)"]
-        OAI_AUTH["https://auth.openai.com"]
-        OAI_USAGE["https://chatgpt.com/backend-api/wham/usage"]
-        STORAGE_PROXY["~/.codex-proxy/ (accounts.json, wakeup_tasks.json)"]
-        STORAGE_CODEX["~/.codex/ (auth.json, config.toml)"]
-    end
+The gateway store serializes writes. Accounts passes actual API-key input to Rust but retains only redacted account metadata. Settings uses separate Save and Save-and-apply actions. Modal focus is trapped and errors remain visible.
 
-    Frontend <-->|Tauri IPC (invoke)| LIB
-    LIB --> PROXY
-    LIB --> OAUTH
-    LIB --> WAKE
-    LIB --> ACCT
+## Gateway contract
 
-    CLI <-->|HTTP & Responses SSE| PROXY
-    OAUTH <-->|PKCE Auth Code & Token Exchange| OAI_AUTH
-    WAKE -->|Keepalive Ping (Every 30s Loop)| OAI_USAGE
-    ACCT -->|Live Quota Sync| OAI_USAGE
-    ACCT -->|Refresh Token| OAI_AUTH
-    ACCT <-->|Persistence| STORAGE_PROXY
-    ACCT -->|Sync Active Profile| STORAGE_CODEX
-```
+- GET /health and /ping: listener health, no upstream call.
+- GET /v1/models (also /models): selected account's real upstream catalog.
+- POST /v1/responses (also /responses): JSON or upstream SSE.
+- POST /v1/responses/compact (also /responses/compact): non-streaming compaction forwarding.
+- POST /v1/chat/completions (also /chat/completions): native API-key forwarding, or OAuth Responses adapter.
+- Unknown paths, unsupported methods, bad JSON/content types, unavailable accounts, invalid keys, and upstream failures return errors. No canned success.
+- Upstream SSE bytes are preserved for Responses and native Chat. Truncated streams never receive an invented response.completed.
+- OAuth Responses uses store=false and streaming; non-streaming clients receive the terminal response aggregated from the stream.
+- Chat adapter unsupported generation controls fail explicitly. No WebSocket gateway, persisted response retrieval, image-generation endpoint, or generic arbitrary-path proxy is advertised.
+- Session affinity uses session_id/x-session-id scoped by gateway key. Instance-owned profile config sends x-codex-proxy-instance.
+- Namespaced routes are unique across profiles and pin the registered provider account. They do not forward OAuth secrets.
+- Logs are capped at 500 records, memory only. Tokens/counters are for this application session.
+- Default: stopped, 127.0.0.1:8080, no keys, native loopback clients only. LAN requires an enabled key. Disabling all existing keys denies access; deleting all keys returns to unauthenticated loopback mode.
 
----
+## Persistence and external profile writes
 
-## 3. Directory & File Walkthrough
+Local files: accounts.json, gateway.json, settings.json, instances.json, wakeup_tasks.json under ~/.codex-proxy. Credentials are plaintext local files with Unix permissions, not an encrypted vault.
 
-### Backend (`src-tauri/`)
-- [`src-tauri/src/lib.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/lib.rs): Main application entrypoint. Initializes `AppState` (`AccountManager`, `ProxyServer`, `WakeupManager`, `GatewayConfig`), starts background loops, registers system tray menu (Quit, Show/Hide), and exposes all Tauri IPC invoke commands.
-- [`src-tauri/src/proxy.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/proxy.rs): In-process HTTP & Server-Sent Events (SSE) server listening on `127.0.0.1:8080`:
-  - `GET /health` & `/ping`: Returns `{"status":"healthy","engine":"rust-in-process"}`.
-  - `GET /v1/models`: OpenAI-compatible models catalog (`gpt-5.5`, `gpt-5.6-luna`, `gpt-image-2.5`, `deepseek-v4-flash`).
-  - `POST /v1/responses`: **Codex Responses Wire API**. Implements the full SSE lifecycle: `response.created` → `response.output_item.added` → `response.output_text.delta` → `response.output_item.done` → `response.completed`. Compatible with `/opt/homebrew/bin/codex exec`.
-  - `POST /v1/chat/completions`: Handles both JSON and SSE streaming (`"stream": true`) with `data: [DONE]`.
-  - `OPTIONS *`: CORS preflight handling.
-- [`src-tauri/src/oauth.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/oauth.rs): Official OpenAI PKCE OAuth flow:
-  - Generates 32-byte `code_verifier` and SHA-256 S256 `code_challenge`.
-  - Binds an ephemeral local TCP listener (`127.0.0.1:<port>/auth/callback`).
-  - Launches system browser with Client ID `app_EMoamEEZ73f0CkXaXp7hrann`.
-  - Catches code on redirect, returns a confirmation web page to the browser, exchanges code at `https://auth.openai.com/oauth/token`, parses JWT claims, and stores the account.
-- [`src-tauri/src/wakeup.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/wakeup.rs): Keepalive Wakeup Engine:
-  - Background Tokio loop runs every 30 seconds.
-  - Pings `https://chatgpt.com/backend-api/wham/usage` with live tokens to keep sessions warm and start the rolling 5-hour rate limit reset early.
-  - Persists schedule to `~/.codex-proxy/wakeup_tasks.json`.
-- [`src-tauri/src/account.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/account.rs): Multi-account manager:
-  - Storage in `~/.codex-proxy/accounts.json`.
-  - Cleans JSON with trailing commas (`clean_json_trailing_commas`).
-  - Live quota queries (`wham/usage`) parsing `primary_window` (hourly), `secondary_window` (weekly), and `reset_credits`.
-  - Token refresh via `https://auth.openai.com/oauth/token`.
-  - **`sync_profile_takeover`**: When switching accounts, writes the official schema to `~/.codex/auth.json` with `auth_mode: "chatgpt"`, `tokens: { id_token, access_token, refresh_token, account_id }`, and `last_refresh`.
-- [`src-tauri/src/models.rs`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src-tauri/src/models.rs): Rust data definitions (`CodexAccount`, `CodexQuota`, `WakeupTask`, `GatewayConfig`).
+External auth.json is updated only by explicit Switch or a refresh of the same active account already present in that file. OAuth schema retains auth_mode=chatgpt, OPENAI_API_KEY=null, tokens with id/access/refresh/account ID, and last_refresh. API-key takeover uses the API-key schema.
 
-### Frontend (`src/`)
-- [`src/components/layout/AppLayout.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/components/layout/AppLayout.tsx): Root layout with gradient depth and viewport padding to prevent bottom clipping.
-- [`src/components/layout/Sidebar.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/components/layout/Sidebar.tsx): Navigation sidebar with draggable macOS titlebar region, live gateway status indicator, and high-res brand logo.
-- [`src/components/layout/StatusBar.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/components/layout/StatusBar.tsx): Single-line footer showing Gateway URL, Active Profile, Privacy Mode, and Engine runtime. All items have `whitespace-nowrap flex-shrink-0` to eliminate wrapping.
-- [`src/components/ui/ProgressBar.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/components/ui/ProgressBar.tsx): Custom dual-tone glow gradient progress meters.
-- [`src/components/ui/Slider.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/components/ui/Slider.tsx): Custom gradient slider with quick presets.
-- [`src/pages/DashboardPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/DashboardPage.tsx): Gateway control, stats cards, rate limit meters, Account Pool Routing table with 1-click active switch, and live stream logs.
-- [`src/pages/AccountsPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/AccountsPage.tsx): Account cards, plan badges, quota gauges, active profile indicator, PKCE login trigger, and JSON batch importer.
-- [`src/pages/WakeupPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/WakeupPage.tsx): Wakeup task list, interval configuration (2h, 4h, 6h, 12h, 24h), execution history, duration, and manual trigger.
-- [`src/pages/GatewayPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/GatewayPage.tsx): Gateway configuration (port, timeout, rate limiting).
-- [`src/pages/InstancesPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/InstancesPage.tsx): Route routing (`cpa/*`, `deepseek/*`, `openai/*`).
-- [`src/pages/InspectorPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/InspectorPage.tsx): Request logging inspector with segmented filters (`All`, `Success`, `Errors`).
-- [`src/pages/SettingsPage.tsx`](file:///Users/tonminh-mac/Documents/GitHub/codex-proxy/src/pages/SettingsPage.tsx): Path overrides for `~/.codex` and system options.
+One-time backups use auth.json.codex-proxy-backup and config.toml.codex-proxy-backup. No automatic deletion of instance directories or external auth files.
 
----
+Never copy real credentials into tests, examples, screenshots, logs, or commits. Old revisions contained credential-looking fixtures and tests that wrote real profile files. Current tests are isolated; affected credentials still require user-controlled revocation/rotation, and history remains unchanged.
 
-## 4. Key Conventions & Rules to Remember
-
-1. **`~/.codex/auth.json` Schema Compatibility**:
-   The official OpenAI Codex CLI requires the following JSON structure. **Never change this structure or omit `tokens` or `id_token`**, or `codex doctor` will report an auth failure:
-   ```json
-   {
-     "auth_mode": "chatgpt",
-     "OPENAI_API_KEY": null,
-     "tokens": {
-       "id_token": "<jwt>",
-       "access_token": "<jwt>",
-       "refresh_token": "<rt_token>",
-       "account_id": "<uuid>"
-     },
-     "last_refresh": "2026-09-22T00:00:00Z"
-   }
-   ```
-2. **OpenAI OAuth Client Details**:
-   - Client ID: `app_EMoamEEZ73f0CkXaXp7hrann`
-   - Authorization URL: `https://auth.openai.com/authorize`
-   - Token Exchange URL: `https://auth.openai.com/oauth/token`
-   - Scopes: `openid email profile offline_access api.connectors.read api.connectors.invoke`
-   - PKCE Challenge Method: `S256` with URL-safe unpadded base64 encoding.
-3. **Codex Responses Wire Protocol**:
-   When clients use `wire_api = "responses"`, requests to `/v1/responses` must be responded to with `Content-Type: text/event-stream` containing `event: response.completed` as the terminal event, otherwise Codex CLI will error with `stream disconnected before completion: stream closed before response.completed`.
-4. **Desktop Layout Stability**:
-   Never remove `whitespace-nowrap flex-shrink-0` from `StatusBar.tsx` or `Badge.tsx`. This ensures single-line developer-grade alignment across different window widths without wrapping or visual clipping.
-5. **Tauri Background Async Spawning**:
-   In Tauri v2 `setup()`, always use `tauri::async_runtime::spawn` instead of naked `tokio::spawn`, because Tauri manages its own async runtime context.
-
----
-
-## 5. Verification Commands
-
-Before concluding any work, run the following verification pipeline:
+## Verification
 
 ```bash
-# 1. Rust unit & integration test suite (must pass 16 of 16)
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
-
-# 2. TypeScript compilation check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+npm ci
+npm test
 npm run typecheck
-
-# 3. Production asset bundling
 npm run build
+npm audit
 
-# 4. Proxy Health check
-curl -s http://127.0.0.1:8080/health
+# Opt-in, installed CLI; does not use live accounts:
+CODEX_PROXY_TEST_CODEX=/opt/homebrew/bin/codex \
+  cargo test --manifest-path src-tauri/Cargo.toml --test cli_smoke -- --ignored
 
-# 5. Codex CLI Live Verification
-codex exec --ephemeral \
-  -c model_provider="codex_local_access" \
-  -c model_providers.codex_local_access.base_url="http://127.0.0.1:8080/v1" \
-  -c model_providers.codex_local_access.wire_api="responses" \
-  -c model_providers.codex_local_access.requires_openai_auth=false \
-  -c model_providers.codex_local_access.supports_websockets=false \
-  "ping"
-
-# 6. Codex CLI Auth Diagnostic
-codex doctor
+# macOS debug application bundle:
+npm run tauri:build -- --debug --bundles app
 ```
 
----
+At implementation verification: 34 Rust tests and 8 frontend tests pass; the installed Codex 0.154.0 also passed the separate CLI/app-server smoke test. Clippy and frontend typecheck/build pass; npm audit reports zero vulnerabilities. The macOS debug CodexProxy.app bundle built successfully at src-tauri/target/debug/bundle/macos/CodexProxy.app. Test discovery is restricted to src/**/*.test.ts so the ignored .reference clone is excluded from future frontend test runs.
 
-## 6. Remote Repository
+## Boundaries and follow-up checks
 
-- **Origin**: `https://github.com/tonminhce/codex-proxy.git`
-- **Primary Branch**: `main`
-- All changes are synchronized and up to date.
+- Interactive OAuth login and live authenticated OpenAI requests have not been exercised with the user's credentials. Do not claim they were.
+- Windows packaging/process/permissions behavior has not been verified on Windows.
+- Browser preview verification covers layout and unavailable-backend error behavior, not live Tauri IPC.
+- System-login autostart is not installed. The setting controls starting the gateway when the app opens.
+- Instance launch manages a CLI app-server with a loopback endpoint; use codex --remote ENDPOINT to connect. It is not a Codex Desktop window launcher.
+- Restart managed instances after gateway port/key changes. Saved instance config preserves unrelated TOML settings.
+- Private OAuth/usage/Codex endpoints can change; validate live compatibility without exposing credentials.
+- Credential revocation and Git-history rewriting are separate, explicitly authorized operations.
+- Do not push or rewrite history without user authorization.
+
+Official references used: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference), [authentication](https://learn.chatgpt.com/docs/auth), [Responses streaming](https://developers.openai.com/api/docs/guides/streaming-responses), [Codex app-server](https://learn.chatgpt.com/docs/app-server).
