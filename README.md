@@ -17,6 +17,8 @@ The OAuth Chat Completions adapter supports text, user images, function tools, t
 
 ## Develop and verify
 
+The desktop UI uses a graphite/mint design system, keyboard navigation with Cmd/Ctrl+K, accessible confirmation dialogs, and reduced-motion support. All seven pages share responsive layouts and explicit error/empty states. See [UI design and verification](docs/UI_DESIGN.md) for research sources, test coverage, and the development-only synthetic visual fixtures.
+
 Use Node.js 22+, npm, a current stable Rust toolchain, and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash

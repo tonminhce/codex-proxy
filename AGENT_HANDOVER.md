@@ -1,6 +1,6 @@
 # Agent handover: CodexProxy
 
-Updated 2026-09-22. This document replaces the earlier handover's demonstration-state claims.
+Updated 2026-09-23. This document replaces the earlier handover's demonstration-state claims.
 
 ## Non-negotiable constraints
 
@@ -32,6 +32,8 @@ Updated 2026-09-22. This document replaces the earlier handover's demonstration-
 Every store is backed by IPC. There are no seeded accounts, tokens, request logs, schedules, fake PIDs, or optimistic success fallbacks. Empty backend lists replace existing UI lists. Mutating operations update UI only after success; failures appear in an app-level banner and open modals. App.tsx polls backend state without overlapping polling batches. Browser preview clearly says the backend is unavailable.
 
 The gateway store serializes writes. Accounts passes actual API-key input to Rust but retains only redacted account metadata. Settings uses separate Save and Save-and-apply actions. Modal focus is trapped and errors remain visible.
+
+The 2026-09-23 UI pass added a graphite/mint design system, CSS-only reduced-motion-aware transitions, Cmd/Ctrl+K navigation, explicit form saves, confirmation dialogs, searchable accounts, improved request filters, and responsive states across all seven pages. Navigation labels now use Overview, Gateway, Instances, Schedules, and Request logs, while internal tab IDs are unchanged. See docs/UI_DESIGN.md for evidence and verification boundaries. Synthetic visual fixtures live only under tests/visual and are not imported into the production application.
 
 ## Gateway contract
 
@@ -79,7 +81,7 @@ CODEX_PROXY_TEST_CODEX=/opt/homebrew/bin/codex \
 npm run tauri:build -- --debug --bundles app
 ```
 
-At implementation verification: 34 Rust tests and 8 frontend tests pass; the installed Codex 0.154.0 also passed the separate CLI/app-server smoke test. Clippy and frontend typecheck/build pass; npm audit reports zero vulnerabilities. The macOS debug CodexProxy.app bundle built successfully at src-tauri/target/debug/bundle/macos/CodexProxy.app. Test discovery is restricted to src/**/*.test.ts so the ignored .reference clone is excluded from future frontend test runs.
+At the latest UI verification: 34 Rust tests and 53 frontend tests pass. Clippy and frontend typecheck/build pass; npm audit reports zero vulnerabilities. The macOS debug CodexProxy.app bundle built successfully at src-tauri/target/debug/bundle/macos/CodexProxy.app. The installed Codex 0.154.0 passed the separate CLI/app-server smoke test during the earlier backend implementation; it was not rerun for this UI-only change. Test discovery is restricted to src/**/*.test.{ts,tsx}, excluding the ignored .reference clone.
 
 ## Boundaries and follow-up checks
 
@@ -92,5 +94,9 @@ At implementation verification: 34 Rust tests and 8 frontend tests pass; the ins
 - Private OAuth/usage/Codex endpoints can change; validate live compatibility without exposing credentials.
 - Credential revocation and Git-history rewriting are separate, explicitly authorized operations.
 - Do not push or rewrite history without user authorization.
+
+### Reference audit correction
+
+The initial implementation did not establish full parity with .reference. Subsequent read-only comparison found that its wakeup scheduler executes model prompts (ours only polls quota), its instance system supports Desktop launching (ours manages CLI app-server processes), its OAuth flow has a callback-port fallback (ours binds 1455 only), and its Responses normalization handles additional compatibility cases. The UI redesign does not resolve those backend differences. Do not describe the app as fully reference-equivalent or live-account verified.
 
 Official references used: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference), [authentication](https://learn.chatgpt.com/docs/auth), [Responses streaming](https://developers.openai.com/api/docs/guides/streaming-responses), [Codex app-server](https://learn.chatgpt.com/docs/app-server).
