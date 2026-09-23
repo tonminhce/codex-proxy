@@ -1,330 +1,392 @@
 import React, { useState } from 'react';
 import {
+  Boxes,
+  Plus,
   Play,
   Square,
-  Plus,
   Trash2,
   Folder,
-  Split,
+  GitBranch,
   ArrowRight,
+  Terminal,
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import {
+  ConfirmDialog,
+  CopyButton,
+  EmptyState,
+  Field,
+  Notice,
+  PageHeader,
+  SectionHead,
+} from '../components/ui/Elements';
 import { useInstanceStore } from '../stores/useInstanceStore';
 import { useAccountStore } from '../stores/useAccountStore';
+import { useBackendError } from '../lib/backend';
 
 export const InstancesPage: React.FC = () => {
-  const {
-    instances,
-    createInstance,
-    toggleInstanceRunning,
-    deleteInstance,
-    addRoute,
-    toggleRoute,
-    deleteRoute,
-  } = useInstanceStore();
-  const { accounts } = useAccountStore();
-
-  const [isNewInstModalOpen, setIsNewInstModalOpen] = useState(false);
-  const [instName, setInstName] = useState('');
-  const [instPath, setInstPath] = useState('');
-  const [boundAccountId, setBoundAccountId] = useState('');
-  const [routeAccountId, setRouteAccountId] = useState('');
-
-  const [isRouteModalOpen, setIsRouteModalOpen] = useState(false);
-  const [selectedInstId, setSelectedInstId] = useState<string | null>(null);
-  const [routeNamespace, setRouteNamespace] = useState('');
-  const [routeProviderName, setRouteProviderName] = useState('');
-  const [routeProviderUrl, setRouteProviderUrl] = useState('https://api.openai.com/v1');
-  const [routeUpstreamModel, setRouteUpstreamModel] = useState('');
-
-  const handleCreateInst = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!await createInstance(instName, instPath, boundAccountId || undefined)) return;
-    setIsNewInstModalOpen(false);
-    setInstName('');
-    setInstPath('');
+  const store = useInstanceStore();
+  const accounts = useAccountStore((s) => s.accounts);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [path, setPath] = useState('');
+  const [bound, setBound] = useState('');
+  const [routeInstance, setRouteInstance] = useState<string | null>(null);
+  const [namespace, setNamespace] = useState('');
+  const [providerName, setProviderName] = useState('');
+  const [routeAccount, setRouteAccount] = useState('');
+  const [model, setModel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [remove, setRemove] = useState<{ instanceId: string; routeId?: string } | null>(null);
+  const routeProvider = accounts.find((a) => a.id === routeAccount);
+  const newInstance = () => {
+    useBackendError.getState().clear();
+    setCreateOpen(true);
   };
-
-  const handleAddRoute = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedInstId) return;
-    if (!await addRoute(selectedInstId, {
-      namespace: routeNamespace.toLowerCase().replace(/[^a-z0-9_-]/g, ''),
-      providerName: routeProviderName,
-      providerBaseUrl: routeProviderUrl,
-      upstreamModel: routeUpstreamModel,
-      enabled: true,
-      accountId: routeAccountId,
-    })) return;
-    setIsRouteModalOpen(false);
-    setRouteNamespace('');
-    setRouteProviderName('');
-  };
-
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex items-center justify-between pb-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Multi-Instance & Model Routing</h1>
-          <p className="text-xs text-zinc-400 mt-1">
-            Run isolated Codex CLI app-server processes and route model namespaces using provider-specific API keys.
-          </p>
-        </div>
-        <Button variant="primary" icon={<Plus className="w-4 h-4" />} onClick={() => setIsNewInstModalOpen(true)}>
-          New Instance
-        </Button>
-      </div>
-
-      {/* Instances List */}
-      <div className="space-y-5">
-        {instances.length === 0 && <Card><p className="text-sm text-zinc-400">No instances yet. Create an isolated profile to launch a Codex app-server. Removing an instance keeps its profile files.</p></Card>}
-        {instances.map((inst) => {
-          const boundAcc = accounts.find((a) => a.id === inst.boundAccountId);
-          return (
-            <Card key={inst.id} elevated={inst.isRunning} className="p-6 space-y-5">
-              {/* Instance Header */}
-              <div className="flex items-start justify-between">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-3">
-                    <h3 className="font-semibold text-base text-zinc-100">{inst.name}</h3>
-                    <Badge variant={inst.isRunning ? 'emerald' : 'zinc'} dot={inst.isRunning}>
-                      {inst.isRunning ? `Running (PID ${inst.pid})` : 'Stopped'}
-                    </Badge>
+    <div className="page">
+      <PageHeader
+        eyebrow="Isolated environments"
+        title="Instances"
+        description="Separate profiles. Independent sessions. One place to manage them."
+        actions={
+          <Button variant="primary" icon={<Plus size={14} />} onClick={newInstance}>
+            New instance
+          </Button>
+        }
+      />
+      <Notice>
+        Instances run the Codex CLI app-server, not a separate Desktop window. Connect with{' '}
+        <code className="mono">codex --remote</code> after launch. Each profile lives inside{' '}
+        <code className="mono">~/.codex-proxy/profiles/</code>.
+      </Notice>
+      {!store.instances.length ? (
+        <Card>
+          <EmptyState
+            icon={<Boxes size={24} />}
+            title="A workspace for every context"
+            description="Create an isolated profile for a project, account, or experiment. No shared auth files are copied."
+            action={
+              <Button variant="primary" icon={<Plus size={14} />} onClick={newInstance}>
+                Create your first instance
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="stack">
+          {store.instances.map((instance) => (
+            <Card key={instance.id} elevated={instance.isRunning}>
+              <div className="account-card-head">
+                <div className="account-identity">
+                  <div className="avatar">
+                    <Boxes size={17} />
                   </div>
-                  {inst.endpoint && <p className="text-xs text-indigo-300 font-mono select-text">Connect: codex --remote {inst.endpoint}</p>}
-                  <div className="flex items-center gap-2 text-xs font-mono text-zinc-400">
-                    <Folder className="w-3.5 h-3.5 text-zinc-500" />
-                    <span>Profile: {inst.profilePath}</span>
-                    <span>•</span>
-                    <span>Bound: {boundAcc ? boundAcc.email : 'None'}</span>
+                  <div className="min-w-0">
+                    <h2>{instance.name}</h2>
+                    <p className="small muted mt-1">
+                      {instance.boundAccountId
+                        ? accounts.find((a) => a.id === instance.boundAccountId)?.email ||
+                          'Account unavailable'
+                        : 'Using gateway account pool'}
+                    </p>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2">
+                <div className="actions">
+                  <Badge dot variant={instance.isRunning ? 'emerald' : 'zinc'}>
+                    {instance.isRunning ? 'Running · ' + instance.pid : 'Stopped'}
+                  </Badge>
                   <Button
                     size="sm"
-                    variant={inst.isRunning ? 'danger' : 'secondary'}
-                    icon={inst.isRunning ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                    onClick={() => toggleInstanceRunning(inst.id)}
-                  >
-                    {inst.isRunning ? 'Stop' : 'Launch App Server'}
-                  </Button>
-                  {inst.id !== 'inst-default' && (
-                    <button
-                      onClick={() => deleteInstance(inst.id)}
-                      className="p-2 text-zinc-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Mixed Model Routing Section for this instance */}
-              <div className="pt-4 border-t border-[#1E2536] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Split className="w-4 h-4 text-indigo-400" />
-                    <span className="text-xs font-semibold text-zinc-200">Mixed Model Routes</span>
-                    <span className="text-[11px] text-zinc-500">
-                      (Route custom namespaces like <code className="text-indigo-300">cpa/*</code> or{' '}
-                      <code className="text-indigo-300">deepseek/*</code> without logging out)
-                    </span>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={inst.isRunning}
-                    icon={<Plus className="w-3 h-3" />}
-                    onClick={() => {
-                      setSelectedInstId(inst.id);
-                      setIsRouteModalOpen(true);
+                    variant={instance.isRunning ? 'secondary' : 'primary'}
+                    loading={pendingId === instance.id}
+                    disabled={pendingId !== null}
+                    icon={instance.isRunning ? <Square size={12} /> : <Play size={12} />}
+                    onClick={async () => {
+                      setPendingId(instance.id);
+                      try {
+                        await store.toggleInstanceRunning(instance.id);
+                      } finally {
+                        setPendingId(null);
+                      }
                     }}
                   >
-                    Add Route
+                    {instance.isRunning ? 'Stop' : 'Launch'}
                   </Button>
+                  <button
+                    className="icon-button danger"
+                    disabled={instance.isRunning || pendingId !== null}
+                    aria-label={'Remove instance ' + instance.name}
+                    title="Remove instance"
+                    onClick={() => {
+                      useBackendError.getState().clear();
+                      setRemove({ instanceId: instance.id });
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
-
-                {inst.routes.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-[#080A10] border border-[#1A2130] text-center text-xs text-zinc-500">
-                    No custom routes configured. Requests use the bound account, or the gateway pool if unbound.
-                  </div>
-                ) : (
-                  <div className="rounded-xl border border-[#1E2536] overflow-hidden bg-[#080A10]">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-[#0A0D15] text-zinc-400 border-b border-[#1E2536] font-mono">
-                        <tr>
-                          <th className="py-2.5 px-4 font-medium">Namespace</th>
-                          <th className="py-2.5 px-4 font-medium">Provider Name</th>
-                          <th className="py-2.5 px-4 font-medium">Target Upstream Model</th>
-                          <th className="py-2.5 px-4 font-medium">Status</th>
-                          <th className="py-2.5 px-4 text-right font-medium">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#181F2F]">
-                        {inst.routes.map((route) => (
-                          <tr key={route.id} className="hover:bg-[#121624]/60 transition">
-                            <td className="py-3 px-4">
-                              <span className="inline-block px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/25 text-indigo-300 font-mono text-xs font-semibold">
-                                {route.namespace}/*
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-zinc-200 font-medium">{route.providerName}</td>
-                            <td className="py-3 px-4 text-zinc-400 font-mono">
-                              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800/80 border border-white/[0.04] text-zinc-300">
-                                <ArrowRight className="w-3 h-3 text-zinc-500" />
-                                {route.upstreamModel}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 font-mono">
-                              <Badge variant={route.enabled ? 'emerald' : 'zinc'} dot={route.enabled}>
-                                {route.enabled ? 'Active' : 'Disabled'}
-                              </Badge>
-                            </td>
-                            <td className="py-3 px-4 text-right space-x-2">
-                              <button
-                                onClick={() => toggleRoute(inst.id, route.id)}
-                                className="text-xs text-zinc-400 hover:text-zinc-200 transition"
-                              >
-                                {route.enabled ? 'Disable' : 'Enable'}
-                              </button>
-                              <button
-                                onClick={() => deleteRoute(inst.id, route.id)}
-                                className="text-xs text-zinc-500 hover:text-rose-400 transition"
-                              >
-                                Delete
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </div>
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* Create Instance Modal */}
-      <Modal
-        isOpen={isNewInstModalOpen}
-        onClose={() => setIsNewInstModalOpen(false)}
-        title="Create New Codex Instance"
-        description="Configures an isolated directory with its own auth.json and conversation history."
-      >
-        <form onSubmit={handleCreateInst} className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Instance Name</label>
-            <input
-              type="text"
-              required
-              value={instName}
-              onChange={(e) => setInstName(e.target.value)}
-              placeholder="e.g. Work Client 2"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-indigo-500/50"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Profile Directory (Optional)</label>
-            <input
-              type="text"
-              value={instPath}
-              onChange={(e) => setInstPath(e.target.value)}
-              placeholder="Auto-generated inside ~/.codex-proxy/profiles/"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
-            />
-          </div>
-
-          <label className="block text-xs text-zinc-300">Bound account<select className="mt-2 w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" value={boundAccountId} onChange={e => setBoundAccountId(e.target.value)}><option value="">Gateway account pool</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name || a.email}</option>)}</select></label>
-
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#1E2536]">
-            <Button type="button" variant="ghost" onClick={() => setIsNewInstModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary">
-              Create Instance
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Add Mixed Route Modal */}
-      <Modal
-        isOpen={isRouteModalOpen}
-        onClose={() => setIsRouteModalOpen(false)}
-        title="Add Mixed Model Route"
-        description="Directs a model prefix to a custom API provider without replacing your official login."
-      >
-        <form onSubmit={handleAddRoute} className="space-y-4">
-          <label className="block text-xs text-zinc-300">Provider API-key account<select required className="mt-2 w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" value={routeAccountId} onChange={e => { setRouteAccountId(e.target.value); const account = accounts.find(a => a.id === e.target.value); if (account) setRouteProviderUrl(account.apiBaseUrl || 'https://api.openai.com/v1'); }}><option value="">Select a configured API-key account</option>{accounts.filter(a => a.authMode === 'apikey').map(a => <option key={a.id} value={a.id}>{a.name || a.email}</option>)}</select></label>
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Namespace Prefix</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                required
-                value={routeNamespace}
-                onChange={(e) => setRouteNamespace(e.target.value)}
-                placeholder="e.g. cpa, deepseek"
-                className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
+              <div className="instance-meta">
+                <span className="flex items-center gap-2 min-w-0">
+                  <Folder size={12} />
+                  <span className="mono truncate-text" title={instance.profilePath}>
+                    {instance.profilePath}
+                  </span>
+                </span>
+              </div>
+              {instance.endpoint && (
+                <div className="endpoint mb-5">
+                  <Terminal size={14} className="accent" />
+                  <code className="mono">codex --remote {instance.endpoint}</code>
+                  <CopyButton
+                    compact
+                    value={'codex --remote ' + instance.endpoint}
+                    label="Copy instance connection command"
+                  />
+                </div>
+              )}
+              <SectionHead
+                title="Model routes"
+                description="Send a namespace to its registered provider account."
+                icon={<GitBranch className="section-icon" />}
+                action={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={instance.isRunning}
+                    icon={<Plus size={13} />}
+                    onClick={() => {
+                      useBackendError.getState().clear();
+                      setRouteInstance(instance.id);
+                      setNamespace('');
+                      setModel('');
+                      setProviderName('');
+                      setRouteAccount('');
+                    }}
+                  >
+                    Add route
+                  </Button>
+                }
               />
-              <span className="text-zinc-500 font-mono">/model</span>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Provider Name</label>
+              {!instance.routes.length ? (
+                <p className="small dim py-2">
+                  No custom routes. Models use the bound account or gateway pool.
+                </p>
+              ) : (
+                instance.routes.map((route) => (
+                  <div className="route-row" key={route.id}>
+                    <Badge variant="indigo">{route.namespace}/*</Badge>
+                    <ArrowRight size={13} className="dim" />
+                    <div className="route-name">
+                      <p className="mono small truncate-text">{route.upstreamModel}</p>
+                      <p className="small dim truncate-text">{route.providerName}</p>
+                    </div>
+                    <Badge variant={route.enabled ? 'emerald' : 'zinc'}>
+                      {route.enabled ? 'Enabled' : 'Disabled'}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={instance.isRunning}
+                      onClick={() => void store.toggleRoute(instance.id, route.id)}
+                    >
+                      {route.enabled ? 'Disable' : 'Enable'}
+                    </Button>
+                    <button
+                      className="icon-button danger"
+                      disabled={instance.isRunning}
+                      aria-label={'Delete route ' + route.namespace}
+                      onClick={() => {
+                        useBackendError.getState().clear();
+                        setRemove({ instanceId: instance.id, routeId: route.id });
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+      <Modal
+        isOpen={createOpen}
+        onClose={() => setCreateOpen(false)}
+        dismissible={!busy}
+        title="Create an instance"
+        description="Give this workspace its own profile and account routing."
+      >
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              if (await store.createInstance(name, path, bound || undefined)) {
+                setCreateOpen(false);
+                setName('');
+                setPath('');
+                setBound('');
+              }
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Field label="Instance name">
             <input
-              type="text"
+              className="input"
               required
-              value={routeProviderName}
-              onChange={(e) => setRouteProviderName(e.target.value)}
-              placeholder="e.g. CPA Enterprise Relay"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-indigo-500/50"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Work projects"
             />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Provider Base URL</label>
+          </Field>
+          <Field
+            label="Profile directory (optional)"
+            hint="Leave blank for an automatically generated isolated path."
+          >
             <input
-              type="url"
-              required
-              value={routeProviderUrl}
-              onChange={(e) => setRouteProviderUrl(e.target.value)}
-              placeholder="https://api.deepseek.com/v1"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
+              className="input mono"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              placeholder="~/.codex-proxy/profiles/…"
             />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Upstream Target Model</label>
-            <input
-              type="text"
-              required
-              value={routeUpstreamModel}
-              onChange={(e) => setRouteUpstreamModel(e.target.value)}
-              placeholder="e.g. gpt-5.5 or deepseek-v4-flash"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
-            />
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#1E2536]">
-            <Button type="button" variant="ghost" onClick={() => setIsRouteModalOpen(false)}>
+          </Field>
+          <Field label="Account">
+            <select className="input" value={bound} onChange={(e) => setBound(e.target.value)}>
+              <option value="">Gateway account pool</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name || a.email}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={busy} onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary">
-              Attach Route
+            <Button type="submit" variant="primary" loading={busy}>
+              Create instance
             </Button>
           </div>
         </form>
       </Modal>
+      <Modal
+        isOpen={routeInstance !== null}
+        onClose={() => setRouteInstance(null)}
+        dismissible={!busy}
+        title="Add a model route"
+        description="Only an API-key account registered for this provider can be used."
+      >
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!routeProvider || !routeInstance) return;
+            setBusy(true);
+            try {
+              if (
+                await store.addRoute(routeInstance, {
+                  namespace,
+                  providerName: providerName || routeProvider.name || 'Custom provider',
+                  providerBaseUrl: routeProvider.apiBaseUrl || 'https://api.openai.com/v1',
+                  upstreamModel: model,
+                  enabled: true,
+                  accountId: routeAccount,
+                })
+              )
+                setRouteInstance(null);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {!accounts.some((a) => a.authMode === 'apikey') && (
+            <Notice tone="warning">Add an API-key account on the Accounts page first.</Notice>
+          )}
+          <Field label="Provider account">
+            <select
+              className="input"
+              required
+              value={routeAccount}
+              onChange={(e) => setRouteAccount(e.target.value)}
+            >
+              <option value="">Select an API-key account</option>
+              {accounts
+                .filter((a) => a.authMode === 'apikey')
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name || a.email}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          {routeProvider && (
+            <p className="small mono muted break-all">
+              {routeProvider.apiBaseUrl || 'https://api.openai.com/v1'}
+            </p>
+          )}
+          <Field label="Namespace" hint="Lowercase letters, numbers, hyphens, and underscores.">
+            <input
+              className="input mono"
+              required
+              pattern="[a-z0-9_-]+"
+              value={namespace}
+              onChange={(e) => setNamespace(e.target.value)}
+              placeholder="e.g. work"
+            />
+          </Field>
+          <Field label="Provider label (optional)">
+            <input
+              className="input"
+              value={providerName}
+              onChange={(e) => setProviderName(e.target.value)}
+              placeholder="e.g. Work relay"
+            />
+          </Field>
+          <Field label="Upstream model">
+            <input
+              className="input mono"
+              required
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="A model supported by this provider"
+            />
+          </Field>
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={busy} onClick={() => setRouteInstance(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={busy} disabled={!routeProvider}>
+              Add route
+            </Button>
+          </div>
+        </form>
+      </Modal>
+      <ConfirmDialog
+        open={remove !== null}
+        title={remove?.routeId ? 'Delete this route?' : 'Remove this instance?'}
+        description={
+          remove?.routeId
+            ? 'Requests using this namespace will no longer be routed to the provider.'
+            : 'Only the instance definition is removed. Its profile files are kept on disk.'
+        }
+        confirmLabel={remove?.routeId ? 'Delete route' : 'Remove instance'}
+        onClose={() => setRemove(null)}
+        onConfirm={() =>
+          remove?.routeId
+            ? store.deleteRoute(remove.instanceId, remove.routeId)
+            : store.deleteInstance(remove!.instanceId)
+        }
+      />
     </div>
   );
 };

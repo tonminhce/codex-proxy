@@ -1,232 +1,258 @@
 import React, { useState } from 'react';
-import {
-  Search,
-  Trash2,
-  ArrowUpRight,
-} from 'lucide-react';
+import { Activity, ArrowUpRight, Trash2, Search, Timer, Hash } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import {
+  ConfirmDialog,
+  CopyButton,
+  EmptyState,
+  Notice,
+  PageHeader,
+  SearchField,
+} from '../components/ui/Elements';
 import { useLogStore } from '../stores/useLogStore';
+import { useBackendError } from '../lib/backend';
 import { RequestLogEntry } from '../types/logs';
-
+export const isSuccessfulRequest = (status: number) => status >= 200 && status < 300;
 export const InspectorPage: React.FC = () => {
   const { logs, filter, setFilter, clearLogs } = useLogStore();
-  const [selectedLog, setSelectedLog] = useState<RequestLogEntry | null>(null);
-
-  const filteredLogs = logs.filter((log) => {
-    if (filter.status === 'success' && log.status !== 200) return false;
-    if (filter.status === 'error' && log.status === 200) return false;
-    if (
-      filter.query &&
-      !log.clientModel.toLowerCase().includes(filter.query.toLowerCase()) &&
-      !log.path.toLowerCase().includes(filter.query.toLowerCase())
-    ) {
-      return false;
-    }
-    return true;
-  });
-
+  const [selected, setSelected] = useState<RequestLogEntry | null>(null);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [model, setModel] = useState('');
+  const models = [...new Set(logs.map((l) => l.clientModel).filter(Boolean))];
+  const query = (filter.query || '').trim().toLowerCase();
+  const filtered = logs.filter(
+    (log) =>
+      (!query ||
+        [log.clientModel, log.path, log.accountEmail || '', log.id].some((v) =>
+          v.toLowerCase().includes(query),
+        )) &&
+      (!model || log.clientModel === model) &&
+      (filter.status === 'success'
+        ? isSuccessfulRequest(log.status)
+        : filter.status === 'error'
+          ? !isSuccessfulRequest(log.status)
+          : true),
+  );
+  const successCount = logs.filter((log) => isSuccessfulRequest(log.status)).length;
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex items-center justify-between pb-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Request Inspector & Logs</h1>
-          <p className="text-xs text-zinc-400 mt-1">
-            Up to 500 local, in-memory request summaries. Prompts, responses, headers and credentials are not stored.
-          </p>
+    <div className="page">
+      <PageHeader
+        eyebrow="Observability"
+        title="Request logs"
+        description="See what happened, without retaining what was said."
+        actions={
+          <Button
+            variant="ghost"
+            icon={<Trash2 size={14} />}
+            disabled={!logs.length}
+            onClick={() => {
+              useBackendError.getState().clear();
+              setClearOpen(true);
+            }}
+          >
+            Clear logs
+          </Button>
+        }
+      />
+      <div className="toolbar">
+        <div className="segmented" aria-label="Request status filter">
+          {(
+            [
+              { id: 'all', label: 'All requests', count: logs.length },
+              { id: 'success', label: 'Success', count: successCount },
+              { id: 'error', label: 'Errors', count: logs.length - successCount },
+            ] as const
+          ).map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              aria-pressed={(filter.status || 'all') === item.id}
+              onClick={() => setFilter({ status: item.id })}
+            >
+              {item.label}
+              <span className="mono dim ml-2">{item.count}</span>
+            </button>
+          ))}
         </div>
-        <Button variant="ghost" icon={<Trash2 className="w-3.5 h-3.5" />} onClick={clearLogs}>
-          Clear Logs
-        </Button>
+        <Badge dot variant="zinc">
+          In-memory · 500 max
+        </Badge>
       </div>
-
-      {/* Filter Toolbar */}
-      <div className="flex items-center justify-between gap-4 p-2.5 rounded-xl bg-[#0E111A] border border-[#1E2536]">
-        <div className="flex items-center gap-2 flex-1 max-w-md px-2 py-1 rounded-lg bg-[#090B11] border border-[#1E2536]">
-          <Search className="w-4 h-4 text-zinc-500 ml-1" />
-          <input
-            type="text"
-            value={filter.query || ''}
-            onChange={(e) => setFilter({ query: e.target.value })}
-            placeholder="Search by model or endpoint..."
-            className="w-full bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none font-mono"
+      <div className="toolbar">
+        <SearchField
+          value={filter.query || ''}
+          onChange={(query) => setFilter({ query })}
+          placeholder="Search model, endpoint, or account…"
+        />
+        <select
+          className="input"
+          style={{ width: 180 }}
+          aria-label="Filter by model"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="">All models</option>
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Card className="table-card">
+        {!filtered.length ? (
+          <EmptyState
+            icon={logs.length ? <Search size={22} /> : <Activity size={22} />}
+            title={
+              logs.length ? 'Nothing matches these filters' : 'Your request history starts here'
+            }
+            description={
+              logs.length
+                ? 'Try another model or remove a filter to see more requests.'
+                : 'Send a request through the gateway. Status, timing, routing, and token usage will appear here.'
+            }
+            action={
+              logs.length ? (
+                <Button
+                  onClick={() => {
+                    setFilter({ status: 'all', query: '' });
+                    setModel('');
+                  }}
+                >
+                  Reset filters
+                </Button>
+              ) : undefined
+            }
           />
-        </div>
-
-        <div className="flex items-center p-1 rounded-lg bg-[#090B11] border border-[#1E2536] text-xs font-medium">
-          <button
-            onClick={() => setFilter({ status: 'all' })}
-            className={`px-3 py-1 rounded-md transition flex items-center gap-1.5 ${
-              filter.status === 'all'
-                ? 'bg-indigo-600/25 text-indigo-200 border border-indigo-500/30 shadow-sm font-semibold'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <span>All</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-800 text-zinc-300 font-mono">
-              {logs.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setFilter({ status: 'success' })}
-            className={`px-3 py-1 rounded-md transition flex items-center gap-1.5 ${
-              filter.status === 'success'
-                ? 'bg-emerald-600/25 text-emerald-200 border border-emerald-500/30 shadow-sm font-semibold'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <span>Success</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-800 text-zinc-300 font-mono">
-              {logs.filter((l) => l.status === 200).length}
-            </span>
-          </button>
-          <button
-            onClick={() => setFilter({ status: 'error' })}
-            className={`px-3 py-1 rounded-md transition flex items-center gap-1.5 ${
-              filter.status === 'error'
-                ? 'bg-rose-600/25 text-rose-200 border border-rose-500/30 shadow-sm font-semibold'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <span>Errors</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-800 text-zinc-300 font-mono">
-              {logs.filter((l) => l.status !== 200).length}
-            </span>
-          </button>
-        </div>
-      </div>
-
-      {/* Logs Table */}
-      <Card className="p-0 overflow-hidden mb-8 border-[#1E2536] bg-[#0E111A]">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs font-mono">
-            <thead className="bg-[#090B11] text-zinc-400 border-b border-[#1E2536]">
-              <tr>
-                <th className="py-3 px-6 font-medium">Time</th>
-                <th className="py-3 px-4 font-medium">Status</th>
-                <th className="py-3 px-4 font-medium">Model</th>
-                <th className="py-3 px-4 font-medium">Endpoint</th>
-                <th className="py-3 px-4 font-medium">Latency</th>
-                <th className="py-3 px-4 font-medium">Tokens</th>
-                <th className="py-3 px-6 text-right font-medium">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#1A2130]">
-              {filteredLogs.length === 0 ? (
+        ) : (
+          <div className="table-scroll">
+            <table className="data-table">
+              <caption className="sr-only">Gateway request metadata</caption>
+              <thead>
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-zinc-500 font-sans">
-                    No requests matching the selected filters.
-                  </td>
+                  <th>Time</th>
+                  <th>Status</th>
+                  <th>Model / endpoint</th>
+                  <th>Duration</th>
+                  <th>Tokens</th>
+                  <th>
+                    <span className="sr-only">Details</span>
+                  </th>
                 </tr>
-              ) : (
-                filteredLogs.map((log) => (
-                  <tr
-                    key={log.id}
-                    onClick={() => setSelectedLog(log)}
-                    className="hover:bg-[#121622]/60 transition cursor-pointer"
-                  >
-                    <td className="py-3.5 px-6 text-zinc-500">
+              </thead>
+              <tbody>
+                {filtered.map((log) => (
+                  <tr key={log.id}>
+                    <td className="mono small muted whitespace-nowrap">
                       {new Date(log.timestamp).toLocaleTimeString()}
                     </td>
-                    <td className="py-3.5 px-4">
-                      <Badge variant={log.status === 200 ? 'emerald' : 'rose'}>{log.status}</Badge>
+                    <td>
+                      <Badge variant={isSuccessfulRequest(log.status) ? 'emerald' : 'rose'}>
+                        {log.status}
+                      </Badge>
                     </td>
-                    <td className="py-3.5 px-4 font-semibold text-zinc-200">{log.clientModel}</td>
-                    <td className="py-3.5 px-4 text-zinc-400">{log.path}</td>
-                    <td className="py-3.5 px-4 text-zinc-400">{log.durationMs}ms</td>
-                    <td className="py-3.5 px-4 text-zinc-300">
-                      <span>{log.totalTokens.toLocaleString()}</span>
+                    <td>
+                      <p className="mono small">{log.clientModel || '—'}</p>
+                      <p className="small dim mt-1">
+                        {log.method} {log.path}
+                      </p>
+                    </td>
+                    <td className="mono small muted whitespace-nowrap">
+                      {log.durationMs.toLocaleString()} ms
+                    </td>
+                    <td className="mono small">
+                      {log.totalTokens.toLocaleString()}
                       {log.cachedTokens > 0 && (
-                        <span className="text-[10px] text-emerald-400 ml-1.5">
-                          ({log.cachedTokens} cached)
-                        </span>
+                        <p className="accent mt-1">{log.cachedTokens.toLocaleString()} cached</p>
                       )}
                     </td>
-                    <td className="py-3.5 px-6 text-right text-indigo-400 hover:text-indigo-300">
-                      <ArrowUpRight className="w-3.5 h-3.5 inline" />
+                    <td>
+                      <button
+                        className="icon-button"
+                        aria-label={'Inspect request ' + log.id}
+                        onClick={() => setSelected(log)}
+                      >
+                        <ArrowUpRight size={16} />
+                      </button>
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
-
-      {/* Log Detail Modal */}
+      <Notice>
+        Metadata stays in memory until you clear it or quit the app. Prompts, responses, request
+        headers, and credentials are never saved here.
+      </Notice>
       <Modal
-        isOpen={Boolean(selectedLog)}
-        onClose={() => setSelectedLog(null)}
-        title="Request Metadata"
-        description={`Request ID: ${selectedLog?.id || ''}`}
+        isOpen={selected !== null}
+        onClose={() => setSelected(null)}
+        title="Request details"
+        description="Routing, timing, and token accounting for this request."
       >
-        {selectedLog && (
-          <div className="space-y-4 text-xs font-mono">
-            <div className="grid grid-cols-2 gap-3 p-4 rounded-xl bg-[#090B11] border border-[#1E2536]">
-              <div>
-                <span className="text-zinc-500 block text-[11px]">Timestamp</span>
-                <span className="text-zinc-200">{new Date(selectedLog.timestamp).toLocaleString()}</span>
-              </div>
-              <div>
-                <span className="text-zinc-500 block text-[11px]">HTTP Status</span>
-                <Badge variant={selectedLog.status === 200 ? 'emerald' : 'rose'}>{selectedLog.status}</Badge>
-              </div>
-              <div>
-                <span className="text-zinc-500 block text-[11px]">Client Model</span>
-                <span className="text-indigo-300">{selectedLog.clientModel}</span>
-              </div>
-              <div>
-                <span className="text-zinc-500 block text-[11px]">Upstream Model</span>
-                <span className="text-zinc-300">{selectedLog.upstreamModel}</span>
-              </div>
-              <div>
-                <span className="text-zinc-500 block text-[11px]">Duration / Latency</span>
-                <span className="text-zinc-300">{selectedLog.durationMs}ms</span>
-              </div>
-              <div>
-                <span className="text-zinc-500 block text-[11px]">Route Kind</span>
-                <span className="uppercase text-[11px] text-zinc-400">{selectedLog.routeKind}</span>
-              </div>
+        {selected && (
+          <div className="stack">
+            <div className="flex items-center justify-between">
+              <Badge variant={isSuccessfulRequest(selected.status) ? 'emerald' : 'rose'}>
+                {selected.status} · {isSuccessfulRequest(selected.status) ? 'Success' : 'Error'}
+              </Badge>
+              <span className="small muted">{new Date(selected.timestamp).toLocaleString()}</span>
             </div>
-
-            {/* Token Breakdown */}
-            <div className="p-4 rounded-xl bg-[#090B11] border border-[#1E2536] space-y-2">
-              <span className="text-xs font-semibold text-zinc-300 font-sans block">Token Accounting</span>
-              <div className="grid grid-cols-2 gap-2 text-zinc-400">
-                <div className="flex justify-between">
-                  <span>Input / Prompt:</span>
-                  <span className="text-zinc-200">{selectedLog.inputTokens}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Output / Completion:</span>
-                  <span className="text-zinc-200">{selectedLog.outputTokens}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Cached Tokens:</span>
-                  <span className="text-emerald-400">{selectedLog.cachedTokens}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Reasoning Tokens:</span>
-                  <span className="text-purple-400">{selectedLog.reasoningTokens}</span>
-                </div>
-              </div>
-              <div className="pt-2 border-t border-[#1E2536] flex justify-between font-semibold text-zinc-100">
-                <span>Total Tokens:</span>
-                <span>{selectedLog.totalTokens.toLocaleString()}</span>
-              </div>
+            <div className="endpoint">
+              <Hash size={13} className="dim" />
+              <code className="mono small">{selected.id}</code>
+              <CopyButton compact value={selected.id} label="Copy request ID" />
             </div>
-
-            {selectedLog.error && (
-              <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[11px]">
-                {selectedLog.error}
-              </div>
-            )}
+            <dl className="grid grid-cols-2 gap-5">
+              {[
+                { name: 'Requested model', value: selected.clientModel || '—' },
+                { name: 'Upstream model', value: selected.upstreamModel || '—' },
+                { name: 'Route', value: selected.routeKind.replaceAll('_', ' ') },
+                { name: 'Duration', value: selected.durationMs + ' ms' },
+                { name: 'Account', value: selected.accountEmail || 'Not assigned' },
+                { name: 'Endpoint', value: selected.method + ' ' + selected.path },
+              ].map((item) => (
+                <div key={item.name} className="min-w-0">
+                  <dt className="small dim mb-1">{item.name}</dt>
+                  <dd className="small mono break-words m-0">{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+            <Card className="stack">
+              <h3 className="flex items-center gap-2">
+                <Timer size={14} className="dim" />
+                Token accounting
+              </h3>
+              {[
+                { name: 'Input', value: selected.inputTokens },
+                { name: 'Output', value: selected.outputTokens },
+                { name: 'Cached input', value: selected.cachedTokens },
+                { name: 'Reasoning', value: selected.reasoningTokens },
+                { name: 'Total', value: selected.totalTokens },
+              ].map((item) => (
+                <div className="flex justify-between small" key={item.name}>
+                  <span className="muted">{item.name}</span>
+                  <span className="mono">{item.value.toLocaleString()}</span>
+                </div>
+              ))}
+            </Card>
+            {selected.error && <Notice tone="error">{selected.error}</Notice>}
           </div>
         )}
       </Modal>
+      <ConfirmDialog
+        open={clearOpen}
+        title="Clear request history?"
+        description="All in-memory request summaries will be removed. Session counters are not reset."
+        confirmLabel="Clear logs"
+        onClose={() => setClearOpen(false)}
+        onConfirm={clearLogs}
+      />
     </div>
   );
 };

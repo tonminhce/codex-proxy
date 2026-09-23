@@ -1,55 +1,269 @@
 import React, { useEffect, useState } from 'react';
-import { Save, Sliders } from 'lucide-react';
+import { Save, Monitor, SlidersHorizontal, ShieldCheck, ArrowUpRight } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { Modal } from '../components/ui/Modal';
+import { Field, Notice, PageHeader, Switch } from '../components/ui/Elements';
 import { action, backend, isDesktop } from '../lib/backend';
-
 interface Settings {
-  codexHome: string; codexBinary: string; startGatewayOnLaunch: boolean; closeToTray: boolean;
-  contextWindow: number | null; compactLimit: number | null; serviceTier: string | null;
+  codexHome: string;
+  codexBinary: string;
+  startGatewayOnLaunch: boolean;
+  closeToTray: boolean;
+  contextWindow: number | null;
+  compactLimit: number | null;
+  serviceTier: string | null;
 }
+const preview: Settings = {
+  codexHome: '~/.codex',
+  codexBinary: 'codex',
+  startGatewayOnLaunch: false,
+  closeToTray: true,
+  contextWindow: null,
+  compactLimit: null,
+  serviceTier: null,
+};
 export const SettingsPage: React.FC = () => {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settings, setSettings] = useState<Settings>(preview);
+  const [savedSettings, setSavedSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [confirmApply, setConfirmApply] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const load = async () => {
+    setLoadFailed(false);
+    try {
+      const loaded = await backend<Settings>('get_app_settings');
+      setSettings(loaded);
+      setSavedSettings(loaded);
+    } catch {
+      setLoadFailed(true);
+    }
+  };
   useEffect(() => {
-    if (isDesktop()) void backend<Settings>('get_app_settings').then(setSettings).catch(() => {});
+    if (isDesktop()) void load();
   }, []);
+  const disabled = !savedSettings || busy;
+  const dirty = savedSettings && JSON.stringify(settings) !== JSON.stringify(savedSettings);
   const save = async (apply: boolean) => {
-    if (!settings) return;
-    setBusy(true); setMessage('');
+    if (!savedSettings) return;
+    setBusy(true);
+    setMessage('');
     const ok = await action(async () => {
-      setSettings(await backend<Settings>('save_app_settings', { settings }));
+      const saved = await backend<Settings>('save_app_settings', { settings });
+      setSettings(saved);
+      setSavedSettings(saved);
       if (apply) await backend('apply_codex_config');
     });
-    if (ok) setMessage(apply ? 'Saved and applied selected Codex overrides. Existing config was backed up.' : 'Application settings saved. Codex config was not changed.');
+    if (ok) {
+      setMessage(
+        apply
+          ? 'Selected overrides applied. Unrelated Codex settings were preserved.'
+          : 'Application settings saved. Your Codex config was not changed.',
+      );
+      setConfirmApply(false);
+    }
     setBusy(false);
   };
-  const field = 'mt-2 w-full rounded-lg border border-[#1E2536] bg-[#090B11] px-3 py-2 text-sm text-zinc-100';
-  if (!settings) return <Card>Open the desktop app to load local application settings.</Card>;
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold">Application Settings</h1><p className="text-xs text-zinc-400 mt-1">Local paths, desktop behavior, and explicit Codex configuration overrides.</p></div>
-        <Button disabled={busy} onClick={() => save(false)} icon={<Save className="w-4 h-4" />}>Save Changes</Button>
-      </div>
-      {message && <p role="status" className="text-sm text-emerald-400">{message}</p>}
-      <Card className="p-6 space-y-5 text-xs">
-        <h2 className="text-sm font-semibold flex gap-2"><Sliders className="w-4 h-4" />Desktop preferences</h2>
-        <label className="block">Codex profile directory<input className={field} value={settings.codexHome} onChange={e => setSettings({ ...settings, codexHome: e.target.value })} /></label>
-        <label className="block">Codex CLI executable<input className={field} value={settings.codexBinary} onChange={e => setSettings({ ...settings, codexBinary: e.target.value })} /></label>
-        <label className="flex justify-between">Start gateway when CodexProxy opens<input type="checkbox" checked={settings.startGatewayOnLaunch} onChange={e => setSettings({ ...settings, startGatewayOnLaunch: e.target.checked })} /></label>
-        <label className="flex justify-between">Close window to system tray<input type="checkbox" checked={settings.closeToTray} onChange={e => setSettings({ ...settings, closeToTray: e.target.checked })} /></label>
-        <p className="text-zinc-500">System-login autostart is not installed. These preferences take effect within CodexProxy.</p>
+    <div className="page">
+      <PageHeader
+        eyebrow="Make it yours"
+        title="Settings"
+        description="Local preferences, explicit changes. Nothing applied behind the scenes."
+        actions={
+          <>
+            <span className="small dim">
+              {dirty ? 'Unsaved changes' : savedSettings ? 'Up to date' : 'Preview'}
+            </span>
+            <Button
+              variant="primary"
+              loading={busy}
+              disabled={disabled || !dirty}
+              icon={<Save size={14} />}
+              onClick={() => void save(false)}
+            >
+              Save changes
+            </Button>
+          </>
+        }
+      />
+      {message && (
+        <Notice tone="success" role="status">
+          {message}
+        </Notice>
+      )}
+      {!savedSettings && (
+        <Notice>
+          {loadFailed ? (
+            <>
+              Settings could not be loaded.{' '}
+              <button className="underline" onClick={() => void load()}>
+                Try again
+              </button>
+            </>
+          ) : isDesktop() ? (
+            'Loading your local settings…'
+          ) : (
+            'These are interface defaults, not your saved settings. Open the desktop app to edit them.'
+          )}
+        </Notice>
+      )}
+      <Card>
+        <section className="settings-section">
+          <div className="settings-intro">
+            <Monitor size={18} className="dim mb-3" />
+            <h2>Desktop & paths</h2>
+            <p>Where Codex lives and how this app behaves.</p>
+          </div>
+          <fieldset disabled={disabled} className="stack">
+            <Field label="Codex profile directory">
+              <input
+                className="input mono"
+                value={settings.codexHome}
+                onChange={(e) => setSettings({ ...settings, codexHome: e.target.value })}
+              />
+            </Field>
+            <Field label="Codex CLI executable">
+              <input
+                className="input mono"
+                value={settings.codexBinary}
+                onChange={(e) => setSettings({ ...settings, codexBinary: e.target.value })}
+              />
+            </Field>
+            <div>
+              <Switch
+                label="Start gateway on launch"
+                description="Start the listener when CodexProxy opens."
+                checked={settings.startGatewayOnLaunch}
+                disabled={disabled}
+                onChange={(value) => setSettings({ ...settings, startGatewayOnLaunch: value })}
+              />
+              <Switch
+                label="Close to system tray"
+                description="Keep the gateway available when the window closes."
+                checked={settings.closeToTray}
+                disabled={disabled}
+                onChange={(value) => setSettings({ ...settings, closeToTray: value })}
+              />
+            </div>
+            <p className="small dim">This does not install system-login autostart.</p>
+          </fieldset>
+        </section>
+        <section className="settings-section">
+          <div className="settings-intro">
+            <SlidersHorizontal size={18} className="dim mb-3" />
+            <h2>Codex overrides</h2>
+            <p>Optional changes to your Codex config. Apply them separately.</p>
+          </div>
+          <fieldset disabled={disabled} className="stack">
+            <Field
+              label="Context window (tokens)"
+              hint="Blank leaves the existing value unchanged."
+            >
+              <input
+                className="input mono"
+                type="number"
+                min={1000}
+                max={2000000}
+                value={settings.contextWindow ?? ''}
+                placeholder="Use existing configuration"
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    contextWindow: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </Field>
+            <Field label="Auto-compact threshold (tokens)">
+              <input
+                className="input mono"
+                type="number"
+                min={1000}
+                max={2000000}
+                value={settings.compactLimit ?? ''}
+                placeholder="Use existing configuration"
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    compactLimit: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </Field>
+            <Field label="Service tier">
+              <select
+                className="input"
+                value={settings.serviceTier ?? ''}
+                onChange={(e) => setSettings({ ...settings, serviceTier: e.target.value || null })}
+              >
+                <option value="">Leave unchanged</option>
+                <option value="fast">Fast · requires model and account support</option>
+              </select>
+            </Field>
+            <Notice>
+              Overrides cannot increase a model's actual capacity or your account entitlement.
+              Unrelated settings are preserved, with a one-time backup.
+            </Notice>
+            <div className="actions justify-end">
+              <Button
+                disabled={disabled}
+                icon={<ArrowUpRight size={14} />}
+                onClick={() => setConfirmApply(true)}
+              >
+                Save & apply overrides
+              </Button>
+            </div>
+          </fieldset>
+        </section>
+        <section className="settings-section">
+          <div className="settings-intro">
+            <ShieldCheck size={18} className="dim mb-3" />
+            <h2>Designed to stay local</h2>
+            <p>A focused interface with quiet defaults.</p>
+          </div>
+          <div className="stack">
+            <div className="field-row pt-0">
+              <div>
+                Motion<p>Short transitions that follow your system's Reduce Motion preference.</p>
+              </div>
+              <span className="small accent">System</span>
+            </div>
+            <div className="field-row">
+              <div>
+                Data & privacy
+                <p>
+                  No analytics or payload logging. Credential files stay on this device; model
+                  requests go to your selected provider.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
       </Card>
-      <Card className="p-6 space-y-5 text-xs">
-        <h2 className="text-sm font-semibold">Optional Codex config overrides</h2>
-        <p className="text-zinc-400">These values cannot increase a model's actual capacity or account entitlement. Blank fields leave existing values unchanged. Applying edits preserves other TOML settings and creates a one-time backup.</p>
-        <label className="block">Context window (tokens)<input type="number" min={1000} max={2000000} placeholder="Leave unchanged" className={field} value={settings.contextWindow ?? ''} onChange={e => setSettings({ ...settings, contextWindow: e.target.value ? Number(e.target.value) : null })} /></label>
-        <label className="block">Auto-compact threshold (tokens)<input type="number" min={1000} max={2000000} placeholder="Leave unchanged" className={field} value={settings.compactLimit ?? ''} onChange={e => setSettings({ ...settings, compactLimit: e.target.value ? Number(e.target.value) : null })} /></label>
-        <label className="block">Service tier<select className={field} value={settings.serviceTier ?? ''} onChange={e => setSettings({ ...settings, serviceTier: e.target.value || null })}><option value="">Leave unchanged</option><option value="fast">Fast (requires model/account support)</option></select></label>
-        <Button disabled={busy} onClick={() => save(true)}>Save and apply to Codex config</Button>
-      </Card>
+      <Modal
+        isOpen={confirmApply}
+        onClose={() => setConfirmApply(false)}
+        dismissible={!busy}
+        title="Apply Codex overrides?"
+        description="This saves your preferences and edits config.toml in the configured Codex profile."
+      >
+        <div className="stack">
+          <Notice>
+            Only the nonblank overrides above are written. The first existing config is backed up;
+            its other values are preserved.
+          </Notice>
+          <div className="modal-actions">
+            <Button disabled={busy} onClick={() => setConfirmApply(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={busy} onClick={() => void save(true)}>
+              Save & apply
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

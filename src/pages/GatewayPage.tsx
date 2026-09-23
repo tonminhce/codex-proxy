@@ -1,337 +1,430 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Radio,
-  Key,
-  Sliders,
-  Copy,
-  Check,
+  KeyRound,
   Plus,
+  Play,
+  Square,
+  ShieldCheck,
+  SlidersHorizontal,
   Trash2,
-  Power,
+  Globe,
+  LockKeyhole,
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { Slider } from '../components/ui/Slider';
+import {
+  ConfirmDialog,
+  CopyButton,
+  EmptyState,
+  Field,
+  Notice,
+  PageHeader,
+  SectionHead,
+  Switch,
+} from '../components/ui/Elements';
 import { useGatewayStore } from '../stores/useGatewayStore';
 import { RoutingStrategy } from '../types/gateway';
+import { useBackendError } from '../lib/backend';
 
 export const GatewayPage: React.FC = () => {
-  const {
-    running,
-    port,
-    host,
-    scope,
-    routingStrategy,
-    sessionAffinity,
-    sessionAffinityTtlSeconds,
-    quotaReservePercent,
-    apiKeys,
-    updatePort,
-    updateScope,
-    updateRoutingStrategy,
-    updateSessionAffinity,
-    updateQuotaReserve,
-    createApiKey,
-    deleteApiKey,
-    toggleApiKey,
-    toggleGateway,
-    busy,
-    requestTimeoutSeconds,
-    requestsPerMinute,
-    maxRetries,
-    updateLimits,
-  } = useGatewayStore();
-
-  const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
-  const [portInput, setPortInput] = useState(String(port));
-  React.useEffect(() => { setPortInput(String(port)); }, [port]);
-
-  const handleCopyKey = (id: string, key: string) => {
-    navigator.clipboard.writeText(key);
-    setCopiedKeyId(id);
-    setTimeout(() => setCopiedKeyId(null), 1500);
-  };
-
-  const handleCreateKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!await createApiKey(newKeyName)) return;
-    setIsKeyModalOpen(false);
-    setNewKeyName('');
-  };
-
+  const g = useGatewayStore();
+  const [port, setPort] = useState(String(g.port));
+  const [timeout, setTimeoutValue] = useState(String(g.requestTimeoutSeconds));
+  const [retries, setRetries] = useState(String(g.maxRetries));
+  const [rate, setRate] = useState(String(g.requestsPerMinute));
+  const [affinity, setAffinity] = useState(g.sessionAffinityTtlSeconds);
+  const [reserve, setReserve] = useState(g.quotaReservePercent);
+  const [keyModal, setKeyModal] = useState(false);
+  const [keyName, setKeyName] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [removeId, setRemoveId] = useState<string | null>(null);
+  useEffect(() => setPort(String(g.port)), [g.port]);
+  useEffect(() => {
+    setTimeoutValue(String(g.requestTimeoutSeconds));
+    setRetries(String(g.maxRetries));
+    setRate(String(g.requestsPerMinute));
+  }, [g.requestTimeoutSeconds, g.maxRetries, g.requestsPerMinute]);
+  useEffect(() => setAffinity(g.sessionAffinityTtlSeconds), [g.sessionAffinityTtlSeconds]);
+  useEffect(() => setReserve(g.quotaReservePercent), [g.quotaReservePercent]);
+  const routingDirty =
+    affinity !== g.sessionAffinityTtlSeconds || reserve !== g.quotaReservePercent;
+  const baseUrl = 'http://127.0.0.1:' + g.port + '/v1';
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex items-center justify-between pb-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Proxy Gateway Settings</h1>
-          <p className="text-xs text-zinc-400 mt-1">
-            Configure HTTP and SSE forwarding, account routing, and local client API keys.
-          </p>
-        </div>
-        <Button
-          variant={running ? 'danger' : 'primary'}
-          icon={<Power className="w-4 h-4" />}
-          onClick={toggleGateway}
-          disabled={busy}
-        >
-          {running ? 'Stop Gateway' : 'Start Gateway'}
-        </Button>
-      </div>
-
-      {/* Network & Routing Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Network Binding */}
-        <Card className="p-6 space-y-5">
-          <div className="flex items-center gap-2.5 pb-2 border-b border-[#1E2536]">
-            <Radio className="w-4 h-4 text-indigo-400" />
-            <h3 className="font-semibold text-sm text-zinc-100">Network & Binding</h3>
-          </div>
-
-          <div className="space-y-4 text-xs font-mono">
-            <div>
-              <label className="block text-zinc-400 font-sans mb-1.5 font-medium">Gateway Port</label>
-              <div className="flex items-center gap-3">
+    <div className="page">
+      <PageHeader
+        eyebrow="Connection & routing"
+        title="Gateway"
+        description="A single local endpoint, configured for the way you work."
+        actions={
+          <>
+            <Badge dot variant={g.running ? 'emerald' : 'zinc'}>
+              {g.running ? 'Listening' : 'Stopped'}
+            </Badge>
+            <Button
+              variant={g.running ? 'secondary' : 'primary'}
+              loading={g.busy}
+              icon={g.running ? <Square size={13} /> : <Play size={13} />}
+              onClick={() => void g.toggleGateway()}
+            >
+              {g.running ? 'Stop gateway' : 'Start gateway'}
+            </Button>
+          </>
+        }
+      />
+      <div className="two-col">
+        <Card>
+          <SectionHead
+            title="Network"
+            description="Where your Codex clients connect."
+            icon={<Radio className="section-icon" />}
+          />
+          <form
+            className="stack"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await g.updatePort(Number(port));
+            }}
+          >
+            <div className="field">
+              <label htmlFor="gateway-port">Listener port</label>
+              <div className="flex gap-2">
                 <input
+                  id="gateway-port"
+                  className="input mono"
                   type="number"
                   min={1}
                   max={65535}
-                  value={portInput}
-                  onChange={(e) => setPortInput(e.target.value)}
-                  onBlur={() => { if (Number(portInput) !== port) void updatePort(Number(portInput)); }}
-                  className="w-32 px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-indigo-500/50 font-mono"
+                  required
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
                 />
-                <span className="text-zinc-500 font-sans">Default is 8080</span>
+                <Button type="submit" disabled={g.busy || Number(port) === g.port}>
+                  Apply
+                </Button>
               </div>
             </div>
-
             <div>
-              <label className="block text-zinc-400 font-sans mb-1.5 font-medium">Access Scope</label>
-              <div className="grid grid-cols-2 gap-2">
+              <p className="mb-2">Access scope</p>
+              <div className="choice-grid">
                 <button
                   type="button"
-                  onClick={() => updateScope('localhost')}
-                  className={`p-3 rounded-xl border text-left transition ${
-                    scope === 'localhost'
-                      ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300'
-                      : 'bg-[#090B11] border-[#1E2536] text-zinc-400 hover:text-zinc-200'
-                  }`}
+                  className="choice"
+                  aria-pressed={g.scope === 'localhost'}
+                  disabled={g.busy}
+                  onClick={() => void g.updateScope('localhost')}
                 >
-                  <div className="font-semibold font-sans text-xs">Localhost Only</div>
-                  <div className="text-[11px] text-zinc-500 mt-0.5">127.0.0.1 (Loopback)</div>
+                  <LockKeyhole size={17} />
+                  <strong>This device</strong>
+                  <small>127.0.0.1 · Recommended</small>
                 </button>
-
                 <button
                   type="button"
-                  onClick={() => updateScope('lan')}
-                  className={`p-3 rounded-xl border text-left transition ${
-                    scope === 'lan'
-                      ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300'
-                      : 'bg-[#090B11] border-[#1E2536] text-zinc-400 hover:text-zinc-200'
-                  }`}
+                  className="choice"
+                  aria-pressed={g.scope === 'lan'}
+                  disabled={g.busy}
+                  onClick={() => void g.updateScope('lan')}
                 >
-                  <div className="font-semibold font-sans text-xs">LAN Exposure</div>
-                  <div className="text-[11px] text-zinc-500 mt-0.5">0.0.0.0 (Local Network)</div>
+                  <Globe size={17} />
+                  <strong>Local network</strong>
+                  <small>0.0.0.0 · Requires a client key</small>
                 </button>
               </div>
             </div>
-
-            <div className="p-3 rounded-lg bg-[#090B11] border border-[#1E2536] text-zinc-400 font-sans text-[11px]">
-              Active Gateway Base URL:{' '}
-              <span className="font-mono text-emerald-400 font-semibold">http://{host}:{port}/v1</span>
+            <div>
+              <span className="eyebrow">Client endpoint</span>
+              <div className="endpoint">
+                <code className="mono accent">{baseUrl}</code>
+                <CopyButton value={baseUrl} compact label="Copy gateway endpoint" />
+              </div>
             </div>
-          </div>
+            {g.scope === 'lan' && (
+              <Notice tone="warning">
+                LAN traffic uses plain HTTP. Use a trusted network or a protected tunnel. Connect
+                other devices using this computer's LAN address.
+              </Notice>
+            )}
+          </form>
         </Card>
-
-        {/* Load Balancing & Routing Strategy */}
-        <Card className="p-6 space-y-5">
-          <div className="flex items-center gap-2.5 pb-2 border-b border-[#1E2536]">
-            <Sliders className="w-4 h-4 text-indigo-400" />
-            <h3 className="font-semibold text-sm text-zinc-100">Load Balancing & Affinity</h3>
-          </div>
-
-          <div className="space-y-4 text-xs">
-            <div>
-              <label className="block text-zinc-400 mb-1.5 font-medium">Pool Routing Strategy</label>
+        <Card>
+          <SectionHead
+            title="Account routing"
+            description="Choose how requests move through your pool."
+            icon={<SlidersHorizontal className="section-icon" />}
+          />
+          <div className="stack">
+            <Field label="Routing strategy">
               <select
-                value={routingStrategy}
-                onChange={(e) => updateRoutingStrategy(e.target.value as RoutingStrategy)}
-                className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-zinc-200 text-xs focus:outline-none focus:border-indigo-500/50"
+                className="input"
+                value={g.routingStrategy}
+                disabled={g.busy}
+                onChange={(e) => void g.updateRoutingStrategy(e.target.value as RoutingStrategy)}
               >
-                <option value="auto">Auto (Smart Quota & Plan Rotation)</option>
-                <option value="random">Random Distribution</option>
-                <option value="quota_high_first">Highest Remaining Quota First</option>
-                <option value="plan_high_first">Highest Plan Tier First (Team &gt; Plus)</option>
-                <option value="single_account">Single Account Pinning</option>
+                <option value="auto">Automatic · quota aware</option>
+                <option value="random">Random distribution</option>
+                <option value="quota_high_first">Highest remaining quota</option>
+                <option value="quota_low_first">Lowest remaining quota</option>
+                <option value="plan_high_first">Highest plan tier</option>
+                <option value="single_account">Active account only</option>
               </select>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-medium text-zinc-200">Session Affinity</span>
-                  <p className="text-[11px] text-zinc-500">Pins conversation threads to the same account.</p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={sessionAffinity}
-                  onChange={(e) => updateSessionAffinity(e.target.checked, sessionAffinityTtlSeconds)}
-                  className="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-indigo-600 focus:ring-indigo-500"
-                />
-              </div>
-              {sessionAffinity && (
-                <div className="pt-2">
-                  <Slider
-                    min={300}
-                    max={7200}
-                    step={300}
-                    value={sessionAffinityTtlSeconds}
-                    onChange={(val) => updateSessionAffinity(true, val)}
-                    label="Affinity Expiration (TTL)"
-                    description="Duration a conversation thread remains bound to the same account."
-                    formatValue={(sec) => `${Math.round(sec / 60)} min`}
-                    presets={[900, 1800, 3600]}
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="pt-3 border-t border-[#1E2536]">
+            </Field>
+            <Switch
+              label="Session affinity"
+              description="Keep a conversation on the same account."
+              checked={g.sessionAffinity}
+              disabled={g.busy}
+              onChange={(enabled) =>
+                void g.updateSessionAffinity(enabled, g.sessionAffinityTtlSeconds)
+              }
+            />
+            {g.sessionAffinity && (
               <Slider
-                min={0}
-                max={50}
-                step={5}
-                value={quotaReservePercent}
-                onChange={updateQuotaReserve}
-                label="Quota Reserve Threshold"
-                description="Excludes accounts from load-balancer pool when remaining quota drops below this limit."
-                unit="%"
-                presets={[5, 10, 15, 20, 30]}
+                min={300}
+                max={7200}
+                step={300}
+                value={affinity}
+                onChange={setAffinity}
+                label="Affinity duration"
+                formatValue={(s) => s / 60 + ' min'}
+                presets={[900, 1800, 3600]}
+                disabled={g.busy}
               />
-            </div>
+            )}
+            <Slider
+              min={0}
+              max={50}
+              step={5}
+              value={reserve}
+              onChange={setReserve}
+              label="Quota reserve"
+              description="Keep this percentage available by excluding accounts below the threshold."
+              unit="%"
+              presets={[5, 15, 30]}
+              disabled={g.busy}
+            />
+            {routingDirty && (
+              <Button
+                disabled={g.busy}
+                onClick={async () => {
+                  if (
+                    affinity !== g.sessionAffinityTtlSeconds &&
+                    !(await g.updateSessionAffinity(g.sessionAffinity, affinity))
+                  )
+                    return;
+                  if (reserve !== g.quotaReservePercent) await g.updateQuotaReserve(reserve);
+                }}
+              >
+                Apply routing changes
+              </Button>
+            )}
           </div>
         </Card>
       </div>
-
-      <Card className="p-6 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-        <label>Request timeout (seconds)<input type="number" min={5} max={3600} defaultValue={requestTimeoutSeconds} key={`timeout-${requestTimeoutSeconds}`} onBlur={e => { void updateLimits({ requestTimeoutSeconds: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
-        <label>Additional account attempts<input type="number" min={0} max={5} defaultValue={maxRetries} key={`retries-${maxRetries}`} onBlur={e => { void updateLimits({ maxRetries: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
-        <label>Requests per minute (0 = unlimited)<input type="number" min={0} defaultValue={requestsPerMinute} key={`rate-${requestsPerMinute}`} onBlur={e => { void updateLimits({ requestsPerMinute: Number(e.target.value) }); }} className="mt-2 block w-full bg-[#090B11] border border-[#1E2536] rounded-lg p-2" /></label>
-        <p className="md:col-span-3 text-zinc-400">Without keys, only native loopback clients are accepted. Once any key exists, a valid enabled bearer key is required. LAN access requires a key and uses plain HTTP—use only on a trusted network. Browser-origin requests are rejected.</p>
-      </Card>
-
-      {/* Client API Keys Management Card */}
-      <Card className="p-0 overflow-hidden">
-        <div className="p-4 px-6 border-b border-[#1E2536] flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Key className="w-4 h-4 text-indigo-400" />
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-100">Local Client API Keys</h2>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Bearer keys used by Codex clients to authenticate with this gateway. Counters cover this app session.
-              </p>
-            </div>
+      <Card>
+        <SectionHead
+          title="Request limits"
+          description="Bounded timeouts and retries. No automatic retry after a stream begins."
+        />
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            await g.updateLimits({
+              requestTimeoutSeconds: Number(timeout),
+              maxRetries: Number(retries),
+              requestsPerMinute: Number(rate),
+            });
+          }}
+        >
+          <div className="three-col">
+            <Field label="Timeout (seconds)">
+              <input
+                className="input mono"
+                type="number"
+                min={5}
+                max={3600}
+                required
+                value={timeout}
+                onChange={(e) => setTimeoutValue(e.target.value)}
+              />
+            </Field>
+            <Field label="Additional account attempts">
+              <input
+                className="input mono"
+                type="number"
+                min={0}
+                max={5}
+                required
+                value={retries}
+                onChange={(e) => setRetries(e.target.value)}
+              />
+            </Field>
+            <Field label="Requests per minute" hint="0 means unlimited.">
+              <input
+                className="input mono"
+                type="number"
+                min={0}
+                required
+                value={rate}
+                onChange={(e) => setRate(e.target.value)}
+              />
+            </Field>
           </div>
-          <Button size="sm" variant="primary" icon={<Plus className="w-3.5 h-3.5" />} onClick={() => setIsKeyModalOpen(true)}>
-            New API Key
-          </Button>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs font-mono">
-            <thead className="bg-[#090B11] text-zinc-400 border-b border-[#1E2536]">
-              <tr>
-                <th className="py-3 px-6 font-medium">Name / Label</th>
-                <th className="py-3 px-4 font-medium">API Key</th>
-                <th className="py-3 px-4 font-medium">Tokens Consumed</th>
-                <th className="py-3 px-4 font-medium">Status</th>
-                <th className="py-3 px-6 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#1A2130]">
-              {apiKeys.map((key) => (
-                <tr key={key.id} className="hover:bg-[#121622]/50 transition-colors">
-                  <td className="py-3.5 px-6">
-                    <span className="font-sans font-medium text-zinc-200">{key.name}</span>
-                  </td>
-                  <td className="py-3.5 px-4 font-mono text-zinc-300">
-                    <div className="flex items-center gap-2">
-                      <span>{key.key.slice(0, 16)}••••••••</span>
-                      <button
-                        onClick={() => handleCopyKey(key.id, key.key)}
-                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
-                      >
-                        {copiedKeyId === key.id ? (
-                          <Check className="w-3 h-3 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3 h-3" />
-                        )}
-                      </button>
-                    </div>
-                  </td>
-                  <td className="py-3.5 px-4 text-zinc-400">
-                    {key.totalTokensUsed.toLocaleString()} tokens
-                  </td>
-                  <td className="py-3.5 px-4">
-                    <Badge variant={key.enabled ? 'emerald' : 'zinc'}>
-                      {key.enabled ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                  </td>
-                  <td className="py-3.5 px-6 text-right space-x-2">
-                    <button
-                      onClick={() => toggleApiKey(key.id)}
-                      className="text-xs text-zinc-400 hover:text-zinc-200 transition"
-                    >
-                      {key.enabled ? 'Disable' : 'Enable'}
-                    </button>
-                    <button
-                      onClick={() => deleteApiKey(key.id)}
-                      className="text-xs text-zinc-500 hover:text-rose-400 transition"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 inline" />
-                    </button>
-                  </td>
+          <div className="actions justify-end">
+            <Button
+              type="submit"
+              disabled={
+                g.busy ||
+                (Number(timeout) === g.requestTimeoutSeconds &&
+                  Number(retries) === g.maxRetries &&
+                  Number(rate) === g.requestsPerMinute)
+              }
+            >
+              Save limits
+            </Button>
+          </div>
+        </form>
+      </Card>
+      <Card className="table-card">
+        <SectionHead
+          title="Client API keys"
+          description="Local bearer keys for clients. Upstream credentials are never exposed."
+          action={
+            <Button
+              size="sm"
+              icon={<Plus size={13} />}
+              onClick={() => {
+                useBackendError.getState().clear();
+                setKeyModal(true);
+              }}
+            >
+              New key
+            </Button>
+          }
+        />
+        {!g.apiKeys.length ? (
+          <EmptyState
+            icon={<KeyRound size={22} />}
+            title="Your endpoint, your access rules"
+            description="Native clients on this device can currently connect without a key. Add a key to require authentication."
+          />
+        ) : (
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Secret</th>
+                  <th>Session tokens</th>
+                  <th>Status</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      {/* Create API Key Modal */}
-      <Modal
-        isOpen={isKeyModalOpen}
-        onClose={() => setIsKeyModalOpen(false)}
-        title="Generate Local Client API Key"
-        description="Creates an OpenAI-compatible authorization secret for this gateway."
-      >
-        <form onSubmit={handleCreateKey} className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Key Name / Description</label>
-            <input
-              type="text"
-              required
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              placeholder="e.g. Codex CLI"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
-            />
+              </thead>
+              <tbody>
+                {g.apiKeys.map((key) => (
+                  <tr key={key.id}>
+                    <td>{key.name}</td>
+                    <td>
+                      <div className="actions mono small">
+                        <span>{key.key.slice(0, 10)}••••••••</span>
+                        <CopyButton compact value={key.key} label={'Copy key for ' + key.name} />
+                      </div>
+                    </td>
+                    <td className="mono muted">{key.totalTokensUsed.toLocaleString()}</td>
+                    <td>
+                      <Badge dot variant={key.enabled ? 'emerald' : 'zinc'}>
+                        {key.enabled ? 'Enabled' : 'Disabled'}
+                      </Badge>
+                    </td>
+                    <td>
+                      <div className="actions justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={g.busy}
+                          onClick={() => void g.toggleApiKey(key.id)}
+                        >
+                          {key.enabled ? 'Disable' : 'Enable'}
+                        </Button>
+                        <button
+                          className="icon-button danger"
+                          disabled={g.busy}
+                          aria-label={'Delete key ' + key.name}
+                          onClick={() => {
+                            useBackendError.getState().clear();
+                            setRemoveId(key.id);
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#1E2536]">
-            <Button type="button" variant="ghost" onClick={() => setIsKeyModalOpen(false)}>
+        )}
+      </Card>
+      <Notice>
+        <ShieldCheck className="inline mr-1" size={12} />
+        Once a key exists, every client needs an enabled key. Browser-origin requests are blocked.
+        Restart existing managed instances after changing ports or keys.
+      </Notice>
+      <Modal
+        isOpen={keyModal}
+        onClose={() => setKeyModal(false)}
+        dismissible={!keyBusy}
+        title="Create a client key"
+        description="Give this key a name so you know where it is used."
+      >
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setKeyBusy(true);
+            try {
+              if (await g.createApiKey(keyName)) {
+                setKeyName('');
+                setKeyModal(false);
+              }
+            } finally {
+              setKeyBusy(false);
+            }
+          }}
+        >
+          <Field label="Key name">
+            <input
+              className="input"
+              required
+              value={keyName}
+              onChange={(e) => setKeyName(e.target.value)}
+              placeholder="e.g. Work Codex CLI"
+            />
+          </Field>
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={keyBusy} onClick={() => setKeyModal(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary">
-              Generate Key
+            <Button type="submit" variant="primary" loading={keyBusy}>
+              Create key
             </Button>
           </div>
         </form>
       </Modal>
+      <ConfirmDialog
+        open={removeId !== null}
+        title="Delete this client key?"
+        description="Clients using this key will lose access. Deleting the last key permits unauthenticated loopback access again; LAN mode requires an enabled key."
+        confirmLabel="Delete key"
+        onClose={() => setRemoveId(null)}
+        onConfirm={() => g.deleteApiKey(removeId!)}
+      />
     </div>
   );
 };

@@ -1,307 +1,270 @@
-import React, { useState, useEffect } from 'react';
-import {
-  Clock,
-  Play,
-  Plus,
-  Trash2,
-  CheckCircle2,
-  AlertCircle,
-  Sparkles,
-  Calendar,
-} from 'lucide-react';
+import React, { useState } from 'react';
+import { Clock3, Plus, Play, Trash2, CalendarClock, ShieldCheck } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import {
+  ConfirmDialog,
+  EmptyState,
+  Field,
+  Notice,
+  PageHeader,
+  Switch,
+} from '../components/ui/Elements';
 import { useWakeupStore } from '../stores/useWakeupStore';
 import { useAccountStore } from '../stores/useAccountStore';
-import { WakeupTask } from '../types/wakeup';
-import { isDesktop } from '../lib/backend';
-
+import { useBackendError } from '../lib/backend';
 export const WakeupPage: React.FC = () => {
-  const {
-    tasks,
-    runningTaskId,
-    loadTasks,
-    saveTask,
-    deleteTask,
-    runTaskNow,
-    toggleTaskEnabled,
-  } = useWakeupStore();
-  const { accounts } = useAccountStore();
-
-  useEffect(() => {
-    if (isDesktop()) void loadTasks();
-  }, [loadTasks]);
-
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [taskName, setTaskName] = useState('');
-  const [targetAccountId, setTargetAccountId] = useState(accounts[0]?.id || '');
-  const [intervalHours, setIntervalHours] = useState(4);
-  const [runOnStartup, setRunOnStartup] = useState(true);
-
-  const handleCreateTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const newTask: WakeupTask = {
-      id: '',
-      name: taskName,
-      enabled: true,
-      accountId: targetAccountId || accounts.find(a => a.authMode === 'oauth')?.id || '',
-      intervalHours: Number(intervalHours),
-      runOnStartup,
-    };
-    if (!await saveTask(newTask)) return;
-    setIsModalOpen(false);
-    setTaskName('');
+  const store = useWakeupStore();
+  const accounts = useAccountStore((s) => s.accounts);
+  const oauth = accounts.filter((a) => a.authMode === 'oauth');
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [interval, setInterval] = useState(4);
+  const [startup, setStartup] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [removeId, setRemoveId] = useState<string | null>(null);
+  const add = () => {
+    useBackendError.getState().clear();
+    setAccountId(oauth[0]?.id || '');
+    setOpen(true);
   };
-
-  const formatRelativeTime = (timestamp?: number) => {
-    if (!timestamp) return 'Never';
-    const diffMs = Date.now() - timestamp;
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    return `${diffHours}h ago`;
-  };
-
-  const formatNextRun = (timestamp?: number) => {
-    if (!timestamp) return 'On next trigger';
-    const diffMs = timestamp - Date.now();
-    if (diffMs <= 0) return 'Due now';
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 60) return `in ${diffMins}m`;
-    const diffHours = Math.floor(diffMins / 60);
-    const remMins = diffMins % 60;
-    return `in ${diffHours}h ${remMins}m`;
-  };
-
+  const date = (value?: number) =>
+    value
+      ? new Date(value).toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : 'Not yet';
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex items-center justify-between pb-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-100 flex items-center gap-2.5">
-            <span>Wakeup & Keepalive Tasks</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-mono">
-              Pure Rust Scheduler
-            </span>
-          </h1>
-          <p className="text-xs text-zinc-400 mt-1">
-            Scheduled quota checks with automatic refresh of expired OAuth credentials. No model generation is sent.
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          icon={<Plus className="w-4 h-4" />}
-          disabled={!accounts.some(a => a.authMode === 'oauth')}
-          onClick={() => {
-            setTargetAccountId(accounts.find(a => a.authMode === 'oauth')?.id || '');
-            setIsModalOpen(true);
-          }}
-        >
-          New Wakeup Task
-        </Button>
+    <div className="page">
+      <PageHeader
+        eyebrow="Background operations"
+        title="Schedules"
+        description="A little maintenance, on your terms. Check quota and refresh expired credentials."
+        actions={
+          <Button variant="primary" icon={<Plus size={14} />} onClick={add}>
+            New schedule
+          </Button>
+        }
+      />
+      <div className="metrics" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+        {[
+          { label: 'Total schedules', value: store.tasks.length },
+          { label: 'Enabled', value: store.tasks.filter((t) => t.enabled).length },
+          {
+            label: 'Last run failed',
+            value: store.tasks.filter((t) => t.lastStatus === 'Failed').length,
+          },
+        ].map((m) => (
+          <div className="metric" key={m.label}>
+            <span className="metric-label">{m.label}</span>
+            <div className="metric-value">{m.value.toString().padStart(2, '0')}</div>
+          </div>
+        ))}
       </div>
-
-      {/* Explanatory Info Card */}
-      <Card elevated className="p-5 relative overflow-hidden bg-gradient-to-br from-[#121626] to-[#0A0C14] border-indigo-500/30">
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 flex-shrink-0">
-            <Sparkles className="w-5 h-5" />
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <span>Quota and Credential Checks</span>
-            </h3>
-            <p className="text-xs text-zinc-400 leading-relaxed max-w-4xl">
-              Tasks fetch current account usage and refresh expired OAuth credentials when needed. Usage polling does not guarantee that a rolling quota window starts, resets, or returns to full capacity. Tasks run while CodexProxy is open, including when its window is hidden in the tray.
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Tasks List */}
-      <div className="space-y-4">
-        {tasks.length === 0 && <Card><p className="text-sm text-zinc-400">No scheduled checks. Add an OAuth account, then create a task.</p></Card>}
-        {tasks.map((task) => {
-          const targetAccount = accounts.find((a) => a.id === task.accountId);
-          const isRunningThis = runningTaskId === task.id;
-
-          return (
-            <Card
-              key={task.id}
-              elevated={task.enabled}
-              className={`p-6 transition-all ${
-                task.enabled ? 'border-[#1E2536] bg-[#0E111A]' : 'opacity-60 bg-[#090A0F]'
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-3">
-                    <h3 className="font-semibold text-base text-zinc-100">{task.name}</h3>
-                    <Badge variant={task.enabled ? 'emerald' : 'zinc'} dot={task.enabled}>
-                      {task.enabled ? 'Active Scheduler' : 'Paused'}
-                    </Badge>
+      {!store.tasks.length ? (
+        <Card>
+          <EmptyState
+            icon={<CalendarClock size={24} />}
+            title="Set it once. Stay informed."
+            description="Schedule a quota check for an OAuth account. Tasks run while CodexProxy is open, even when hidden in the tray."
+            action={
+              <Button icon={<Plus size={13} />} onClick={add}>
+                Create a schedule
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="stack">
+          {store.tasks.map((task) => (
+            <Card key={task.id}>
+              <div className="account-card-head">
+                <div className="account-identity">
+                  <div className="avatar">
+                    <Clock3 size={18} />
                   </div>
-
-                  <div className="flex items-center gap-2 text-xs font-mono text-zinc-400">
-                    <Clock className="w-3.5 h-3.5 text-zinc-500" />
-                    <span>Every {task.intervalHours} hours</span>
-                    <span>•</span>
-                    <span>Bound: {targetAccount ? targetAccount.email : task.accountId}</span>
-                    {task.runOnStartup && (
-                      <>
-                        <span>•</span>
-                        <span className="text-indigo-400">Run on Startup</span>
-                      </>
-                    )}
+                  <div>
+                    <h2>{task.name}</h2>
+                    <p className="small muted mt-1">
+                      {accounts.find((a) => a.id === task.accountId)?.email ||
+                        'Account unavailable'}
+                      <span className="mx-2 dim">·</span>Every {task.intervalHours}h
+                    </p>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2">
+                <div className="actions">
+                  <Badge dot variant={task.enabled ? 'emerald' : 'zinc'}>
+                    {task.enabled ? 'Scheduled' : 'Paused'}
+                  </Badge>
                   <Button
                     size="sm"
-                    variant="secondary"
-                    icon={
-                      <Play
-                        className={`w-3.5 h-3.5 fill-current ${
-                          isRunningThis ? 'animate-spin text-indigo-400' : ''
-                        }`}
-                      />
-                    }
-                    loading={isRunningThis}
-                    disabled={runningTaskId !== null}
-                    onClick={() => runTaskNow(task.id)}
+                    loading={store.runningTaskId === task.id}
+                    disabled={store.runningTaskId !== null}
+                    icon={<Play size={12} />}
+                    onClick={() => void store.runTaskNow(task.id)}
                   >
-                    {isRunningThis ? 'Pinging Codex...' : 'Run Now'}
+                    Run now
                   </Button>
-
                   <button
-                    onClick={() => toggleTaskEnabled(task.id)}
-                    className="p-2 text-xs rounded-lg border border-[#1E2536] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition"
+                    className="icon-button danger"
+                    aria-label={'Delete schedule ' + task.name}
+                    onClick={() => {
+                      useBackendError.getState().clear();
+                      setRemoveId(task.id);
+                    }}
                   >
-                    {task.enabled ? 'Pause' : 'Resume'}
-                  </button>
-
-                  <button
-                    onClick={() => deleteTask(task.id)}
-                    title="Delete task"
-                    className="p-2 text-zinc-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition"
-                  >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 size={14} />
                   </button>
                 </div>
               </div>
-
-              {/* Status & Next Trigger Bar */}
-              <div className="mt-5 pt-4 border-t border-[#1E2536] flex items-center justify-between text-xs font-mono">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5">
-                    {task.lastStatus === 'Success' ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <div className="my-4">
+                <Switch
+                  label={task.enabled ? 'Schedule enabled' : 'Schedule paused'}
+                  description={
+                    task.runOnStartup
+                      ? 'Also runs when the application starts.'
+                      : 'Runs at the configured interval.'
+                  }
+                  checked={task.enabled}
+                  onChange={() => void store.toggleTaskEnabled(task.id)}
+                />
+              </div>
+              <dl className="task-meta">
+                <div>
+                  <dt>LAST CHECK</dt>
+                  <dd>{date(task.lastRunAt)}</dd>
+                </div>
+                <div>
+                  <dt>RESULT</dt>
+                  <dd>
+                    {task.lastStatus ? (
+                      <Badge variant={task.lastStatus === 'Success' ? 'emerald' : 'rose'}>
+                        {task.lastStatus}
+                        {task.lastDurationMs != null ? ' · ' + task.lastDurationMs + ' ms' : ''}
+                      </Badge>
                     ) : (
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="muted">Awaiting first run</span>
                     )}
-                    <span className="text-zinc-300">Last Run: {formatRelativeTime(task.lastRunAt)}</span>
-                    {task.lastDurationMs && (
-                      <span className="text-zinc-500">({task.lastDurationMs}ms)</span>
-                    )}
-                  </div>
-
-                  {task.lastMessage && (
-                    <>
-                      <span className="text-zinc-700">|</span>
-                      <span className="text-zinc-400 truncate max-w-md">{task.lastMessage}</span>
-                    </>
-                  )}
+                  </dd>
                 </div>
-
-                <div className="flex items-center gap-2 text-zinc-500">
-                  <Calendar className="w-3.5 h-3.5 text-zinc-500" />
-                  <span>Next wakeup: {formatNextRun(task.nextRunAt)}</span>
+                <div>
+                  <dt>NEXT CHECK</dt>
+                  <dd>{task.enabled ? date(task.nextRunAt) : 'Paused'}</dd>
                 </div>
-              </div>
+              </dl>
+              {task.lastMessage && <p className="small muted mt-4">{task.lastMessage}</p>}
             </Card>
-          );
-        })}
-      </div>
-
-      {/* Create Task Modal */}
+          ))}
+        </div>
+      )}
+      <Notice>
+        <ShieldCheck size={12} className="inline mr-1" />
+        These tasks fetch usage information; they do not send model prompts or guarantee a quota
+        reset. No account is kept “warm” by generating hidden requests.
+      </Notice>
       <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="Create Codex Wakeup Task"
-        description="Schedule local quota and credential checks."
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        dismissible={!busy}
+        title="Create a schedule"
+        description="Choose an account and how often to check its quota."
       >
-        <form onSubmit={handleCreateTask} className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Task Name</label>
+        <form
+          className="stack"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              if (
+                await store.saveTask({
+                  id: '',
+                  name,
+                  enabled: true,
+                  accountId,
+                  intervalHours: interval,
+                  runOnStartup: startup,
+                })
+              ) {
+                setOpen(false);
+                setName('');
+              }
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {!oauth.length && (
+            <Notice tone="warning">
+              Connect a ChatGPT OAuth account from the Accounts page before creating a schedule.
+            </Notice>
+          )}
+          <Field label="Schedule name">
             <input
-              type="text"
+              className="input"
               required
-              value={taskName}
-              onChange={(e) => setTaskName(e.target.value)}
-              placeholder="e.g. Work Profile 4h Quota Reset"
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-sm text-zinc-100 focus:outline-none focus:border-indigo-500/50"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Work account check"
             />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1">Target Codex Account</label>
+          </Field>
+          <Field label="OAuth account">
             <select
-              value={targetAccountId}
-              onChange={(e) => setTargetAccountId(e.target.value)}
-              className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
+              className="input"
+              required
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
             >
-              {accounts.filter(a => a.authMode === 'oauth').map((a) => (
+              <option value="">Select an account</option>
+              {oauth.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name || a.email} ({a.email})
+                  {a.name || a.email}
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Trigger Interval</label>
-              <select
-                value={intervalHours}
-                onChange={(e) => setIntervalHours(Number(e.target.value))}
-                className="w-full px-3 py-2 bg-[#090B11] border border-[#1E2536] rounded-lg text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500/50"
-              >
-                <option value={2}>Every 2 hours</option>
-                <option value={4}>Every 4 hours (Recommended)</option>
-                <option value={6}>Every 6 hours</option>
-                <option value={8}>Every 8 hours</option>
-                <option value={12}>Every 12 hours</option>
-                <option value={24}>Every 24 hours (Daily)</option>
-              </select>
-            </div>
-
-            <div className="flex flex-col justify-end">
-              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none py-2">
-                <input
-                  type="checkbox"
-                  checked={runOnStartup}
-                  onChange={(e) => setRunOnStartup(e.target.checked)}
-                  className="rounded border-[#1E2536] text-indigo-600 focus:ring-0 w-4 h-4 bg-[#090B11]"
-                />
-                <span>Run wakeup on app startup</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#1E2536]">
-            <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)}>
+          </Field>
+          <Field label="Check interval">
+            <select
+              className="input"
+              value={interval}
+              onChange={(e) => setInterval(Number(e.target.value))}
+            >
+              {[2, 4, 6, 8, 12, 24].map((hours) => (
+                <option key={hours} value={hours}>
+                  Every {hours} hours
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Switch
+            label="Run on app startup"
+            description="Also check when CodexProxy is launched."
+            checked={startup}
+            onChange={setStartup}
+          />
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary">
-              Schedule Task
+            <Button type="submit" variant="primary" loading={busy} disabled={!accountId}>
+              Create schedule
             </Button>
           </div>
         </form>
       </Modal>
+      <ConfirmDialog
+        open={removeId !== null}
+        title="Delete this schedule?"
+        description="Future quota checks for this task will stop. The connected account is not removed."
+        confirmLabel="Delete schedule"
+        onClose={() => setRemoveId(null)}
+        onConfirm={() => store.deleteTask(removeId!)}
+      />
     </div>
   );
 };
